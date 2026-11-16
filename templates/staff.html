@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>攤位核銷｜PulsarPump 博覽會任務卡</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><i></i>攤位核銷</div>
+
+  <section class="panel" id="login">
+    <label for="pin">工作人員 PIN<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
+    <button class="primary" id="enter">進入</button>
+    <p class="msg bad" id="loginMsg" hidden></p>
+  </section>
+
+  <div id="main" class="stack" style="gap:20px" hidden>
+    <section class="panel">
+      <div class="progress-top"><span class="muted" id="day"></span><button id="reload" style="padding:6px 12px;font-size:15px">更新</button></div>
+      <div class="tiles">
+        <div class="fact"><span>軟糖 今日剩餘</span><b class="big" id="gLeft">–</b><span id="gCap"></span></div>
+        <div class="fact"><span>勁速補 今日剩餘</span><b class="big" id="cLeft">–</b><span id="cCap"></span></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <label for="code">參加者代碼（任務卡上的 5 碼）
+        <input id="code" autocomplete="off" autocapitalize="characters" maxlength="5" style="font-size:26px;letter-spacing:.18em;text-transform:uppercase"></label>
+      <button class="primary" id="lookup">查詢</button>
+      <p class="msg" id="msg" hidden></p>
+    </section>
+
+    <section class="panel" id="user" hidden></section>
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let PIN = '';
+try { PIN = sessionStorage.getItem('pin') || ''; } catch (e) {}
+
+async function call(path, data) {
+  const r = await fetch(path, {method: data ? 'POST' : 'GET',
+    headers: {'Content-Type': 'application/json', 'X-Staff-Pin': PIN},
+    body: data ? JSON.stringify(data) : undefined});
+  let j = {}; try { j = await r.json(); } catch (e) {}
+  return {status: r.status, ...j};
+}
+function say(text, ok) { const m = $('msg'); m.hidden = !text; m.textContent = text || ''; m.className = 'msg ' + (ok ? 'ok' : 'bad'); }
+
+async function today() {
+  const r = await call('/api/staff/today');
+  if (!r.ok) return false;
+  $('day').textContent = r.day + (r.is_event_day ? '' : '（非展期，不能發放）');
+  $('gLeft').textContent = r.gummy.left; $('gCap').textContent = '共 ' + r.gummy.cap + ' 份';
+  $('cLeft').textContent = r.crampeace.left; $('cCap').textContent = '共 ' + r.crampeace.cap + ' 份';
+  return true;
+}
+
+const LABEL = {
+  gummy: {locked: '未達資格（需加好友＋完成 3 站）', ready: '可以發', out_today: '今日已送完', ended: '活動已結束', claimed: '已領過', switched: '已改領折扣券'},
+  crampeace: {locked: '未達資格（需組隊＋完成第 4 站）', waiting_partner: '隊友還沒完成第 4 站', ready: '可以發', out_today: '今日已送完', ended: '活動已結束', claimed: '已領過'},
+};
+
+function show(u) {
+  const st = [1, 2, 3, 4, 5].map(k => `<span class="tag ${u.stations[k] ? 'ok' : ''}" style="${u.stations[k] ? '' : 'color:var(--muted)'}">${k}</span>`).join('');
+  const row = (key, name) => `<div class="reward ${u[key] === 'ready' ? 'on' : ''}"><b>${name}</b><span>${LABEL[key][u[key]]}</span>
+      ${u[key] === 'ready' ? `<button class="primary" data-claim="${key}">發放${name}並記錄</button>` : ''}</div>`;
+  $('user').hidden = false;
+  $('user').innerHTML = `
+    <div class="progress-top"><h3>${esc(u.name) || '（未提供名稱）'}</h3><b>${esc(u.code)}</b></div>
+    <p class="${u.is_friend ? 'muted' : 'msg bad'}">${u.is_friend ? '已加好友' : '尚未加好友，請他先加入並在任務卡按「重新整理」'}</p>
+    <div class="tags">${st}<span class="muted">已完成 ${u.count} 站</span></div>
+    ${row('gummy', '軟糖 2 條')}${row('crampeace', '勁速補 1 包')}
+    <div class="row2">
+      <button data-mark="4" ${u.stations[4] ? 'disabled' : ''}>代完成第 4 站（試喝）</button>
+      <button data-mark="5" ${u.stations[5] ? 'disabled' : ''}>代完成第 5 站（已當面提問）</button>
+    </div>`;
+  $('user').querySelectorAll('[data-claim]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const r = await call('/api/staff/claim', {code: u.code, reward: b.dataset.claim});
+    say(r.ok ? '已記錄，請把獎勵交給對方。' : (r.error || '發放失敗'), r.ok);
+    if (r.user) show(r.user); today();
+  });
+  $('user').querySelectorAll('[data-mark]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const r = await call('/api/staff/mark', {code: u.code, station: Number(b.dataset.mark)});
+    say(r.ok ? '已完成這一站。' : (r.error || '操作失敗'), r.ok);
+    if (r.user) show(r.user);
+  });
+}
+
+async function lookup() {
+  say('');
+  const r = await call('/api/staff/lookup', {code: $('code').value});
+  if (!r.ok) { $('user').hidden = true; return say(r.error || '查詢失敗', false); }
+  show(r.user);
+}
+
+async function enter() {
+  PIN = $('pin').value || PIN;
+  if (await today()) {
+    try { sessionStorage.setItem('pin', PIN); } catch (e) {}
+    $('login').hidden = true; $('main').hidden = false; $('code').focus();
+  } else if ($('pin').value) {
+    $('loginMsg').hidden = false; $('loginMsg').textContent = 'PIN 不正確，或系統尚未設定。';
+  }
+}
+$('enter').onclick = enter;
+$('pin').addEventListener('keydown', e => { if (e.key === 'Enter') enter(); });
+$('lookup').onclick = lookup;
+$('code').addEventListener('keydown', e => { if (e.key === 'Enter') lookup(); });
+$('reload').onclick = today;
+if (PIN) enter();
+</script>
+</body>
+</html>

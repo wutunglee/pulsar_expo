@@ -1,0 +1,461 @@
+"""PulsarPump 博覽會補給站任務卡。Flask＋SQLite。"""
+import csv
+import hmac
+import io
+import os
+import secrets
+import time
+from datetime import timedelta
+from functools import wraps
+
+from flask import Flask, Response, g, jsonify, render_template, request, session
+
+import content
+import db as dbm
+import line_api
+import rules
+
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # 去掉容易看錯的 0 O 1 I L
+DEFAULT_SECRET = "dev-only-change-me"
+
+
+def load_dotenv(path):
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+def parse_codes(raw):
+    out = {}
+    for part in raw.split(","):
+        if ":" in part:
+            day, code = part.split(":", 1)
+            if code.strip():
+                out[day.strip()] = code.strip().upper()
+    return out
+
+
+def err(msg, status=400, **extra):
+    return jsonify({"ok": False, "error": msg, **extra}), status
+
+
+def create_app(test_config=None):
+    app = Flask(__name__)
+    load_dotenv(os.path.join(app.root_path, ".env"))
+    env = os.environ.get
+    app.config.update(
+        SECRET_KEY=env("SECRET_KEY", DEFAULT_SECRET),
+        DEV_MODE=env("DEV_MODE", "0") == "1",
+        DB_PATH=env("DB_PATH", os.path.join(app.root_path, "data", "expo.db")),
+        LIFF_ID=env("LIFF_ID", ""),
+        LINE_LOGIN_CHANNEL_ID=env("LINE_LOGIN_CHANNEL_ID", ""),
+        LINE_OA_ID=env("LINE_OA_ID", ""),
+        STAFF_PIN=env("STAFF_PIN", ""),
+        ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
+        DAY_CODES=parse_codes(env("DAY_CODES", "")),
+        COUPON_5=env("COUPON_5", ""),
+        COUPON_FALLBACK=env("COUPON_FALLBACK", ""),
+        NOW_FN=None,  # 測試時可換成固定時間
+        PERMANENT_SESSION_LIFETIME=timedelta(days=60),
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+    )
+    if test_config:
+        app.config.update(test_config)
+    app.config["SESSION_COOKIE_SECURE"] = not app.config["DEV_MODE"]
+    if not app.config["DEV_MODE"] and app.config["SECRET_KEY"] == DEFAULT_SECRET:
+        raise RuntimeError("正式環境必須在 .env 設定 SECRET_KEY")
+
+    dbm.init(app.config["DB_PATH"])
+    pin_fails = {}  # ip -> (次數, 解鎖時間)
+
+    def now():
+        fn = app.config["NOW_FN"]
+        return fn() if fn else rules.now()
+
+    def db():
+        if "db" not in g:
+            g.db = dbm.connect(app.config["DB_PATH"])
+        return g.db
+
+    @app.teardown_appcontext
+    def close_db(_exc):
+        conn = g.pop("db", None)
+        if conn is not None:
+            conn.close()
+
+    def me_state():
+        s = rules.state(db(), session["uid"], now(), app.config)
+        if s["stations"]["2"]:  # 答過才給解說，重新開啟時也看得到
+            s["myth_explain"] = content.MYTH["explain"]
+        return s
+
+    def need_user(fn):
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            uid = session.get("uid")
+            if not uid or not rules.get_user(db(), uid):
+                return err("請重新開啟任務卡", 401)
+            return fn(*a, **kw)
+        return wrapper
+
+    def need_consent(fn):
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            if not rules.get_user(db(), session["uid"])["consent_at"]:
+                return err("請先同意資料使用說明", 403)
+            return fn(*a, **kw)
+        return wrapper
+
+    def need_staff(fn):
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            pin = app.config["STAFF_PIN"]
+            if not pin:
+                return err("尚未設定 STAFF_PIN", 503)
+            ip = request.remote_addr or "?"
+            fails, until = pin_fails.get(ip, (0, 0))
+            if time.time() < until:
+                return err("嘗試次數過多，請 10 分鐘後再試", 429)
+            given = request.headers.get("X-Staff-Pin", "")
+            if not hmac.compare_digest(given.encode(), pin.encode()):
+                fails += 1
+                pin_fails[ip] = (fails, time.time() + 600 if fails >= 10 else 0)
+                return err("PIN 不正確", 401)
+            pin_fails.pop(ip, None)
+            return fn(*a, **kw)
+        return wrapper
+
+    def need_admin(fn):
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            token = app.config["ADMIN_TOKEN"]
+            if not token:
+                return err("尚未設定 ADMIN_TOKEN", 503)
+            given = request.args.get("token", "")
+            if not hmac.compare_digest(given.encode(), token.encode()):
+                return err("沒有權限", 401)
+            return fn(*a, **kw)
+        return wrapper
+
+    def new_code():
+        for _ in range(20):
+            code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(5))
+            if not db().execute("SELECT 1 FROM users WHERE code=?", (code,)).fetchone():
+                return code
+        raise RuntimeError("無法產生代碼")
+
+    def body():
+        return request.get_json(silent=True) or {}
+
+    # ---------- 頁面 ----------
+
+    @app.get("/")
+    def index():
+        return render_template("index.html")
+
+    @app.get("/staff")
+    def staff_page():
+        return render_template("staff.html")
+
+    @app.get("/admin")
+    def admin_page():
+        return render_template("admin.html")
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return "", 204
+
+    @app.get("/healthz")
+    def healthz():
+        return jsonify({"ok": True})
+
+    # ---------- 參加者 ----------
+
+    @app.get("/api/config")
+    def api_config():
+        c = app.config
+        return jsonify({
+            "liff_id": c["LIFF_ID"], "dev": c["DEV_MODE"], "oa_id": c["LINE_OA_ID"],
+            "event": content.EVENT, "plans": content.PLANS,
+            "myth": {"question": content.MYTH["question"]},
+            "invite_text": content.INVITE_TEXT, "privacy": content.PRIVACY,
+            "privacy_url": content.PRIVACY_URL, "disclaimer": content.DISCLAIMER,
+            "reviewed": content.REVIEWED_BY_DOCTOR,
+            "caps": {d: {"gummy": v["gummy"], "crampeace": v["crampeace"]}
+                     for d, v in rules.EVENT_DAYS.items()},
+        })
+
+    @app.post("/api/session")
+    def api_session():
+        b, c, n = body(), app.config, now()
+        if c["DEV_MODE"] and b.get("dev_user"):
+            uid = "dev:" + str(b["dev_user"])[:30]
+            name, friend = str(b["dev_user"])[:30], bool(b.get("dev_friend"))
+        else:
+            if not c["LINE_LOGIN_CHANNEL_ID"]:
+                return err("尚未設定 LINE 頻道", 503)
+            try:
+                uid, name = line_api.verify_id_token(b.get("id_token", ""),
+                                                     c["LINE_LOGIN_CHANNEL_ID"])
+                friend = line_api.is_friend(b.get("access_token", ""))
+            except line_api.LineError as e:
+                return err(f"LINE 登入失敗：{e}", 401)
+        conn = db()
+        if rules.get_user(conn, uid):
+            conn.execute("UPDATE users SET name=?, is_friend=? WHERE id=?",
+                         (name[:60], int(friend), uid))
+        else:
+            conn.execute(
+                "INSERT INTO users(id, name, code, is_friend, created_at) VALUES(?,?,?,?,?)",
+                (uid, name[:60], new_code(), int(friend), rules.iso(n)))
+        ref = str(b.get("ref") or "").strip().upper()
+        if ref:
+            inv = conn.execute("SELECT id FROM users WHERE code=?", (ref,)).fetchone()
+            if inv and rules.can_set_inviter(conn, uid, inv["id"]):
+                conn.execute("UPDATE users SET invited_by=? WHERE id=?", (inv["id"], uid))
+        rules.settle_team(conn, uid, n)
+        session.clear()
+        session.permanent = True
+        session["uid"] = uid
+        return jsonify({"ok": True, "state": me_state()})
+
+    @app.get("/api/me")
+    @need_user
+    def api_me():
+        return jsonify({"ok": True, "state": me_state()})
+
+    @app.post("/api/consent")
+    @need_user
+    def api_consent():
+        db().execute("UPDATE users SET consent_at=COALESCE(consent_at, ?) WHERE id=?",
+                     (rules.iso(now()), session["uid"]))
+        return jsonify({"ok": True, "state": me_state()})
+
+    @app.post("/api/station/1")
+    @need_user
+    @need_consent
+    def station1():
+        dist = body().get("distance")
+        if dist not in rules.DISTANCES:
+            return err("請選擇距離")
+        conn, uid, n = db(), session["uid"], now()
+        conn.execute("UPDATE users SET distance=? WHERE id=?", (dist, uid))
+        rules.complete(conn, uid, 1, n, dist)
+        rules.settle_team(conn, uid, n)
+        return jsonify({"ok": True, "state": me_state()})
+
+    @app.post("/api/station/2")
+    @need_user
+    @need_consent
+    def station2():
+        ans = body().get("answer")
+        if not isinstance(ans, bool):
+            return err("請選擇答案")
+        rules.complete(db(), session["uid"], 2, now(), str(ans))
+        return jsonify({"ok": True, "state": me_state(),
+                        "correct": ans == content.MYTH["answer"],
+                        "explain": content.MYTH["explain"]})
+
+    @app.post("/api/station/4")
+    @need_user
+    @need_consent
+    def station4():
+        conn, uid, n = db(), session["uid"], now()
+        day = rules.day_key(n)
+        if not rules.event_day(n):
+            return err("通關碼只在博覽會期間（12/17–12/19）有效")
+        expected = app.config["DAY_CODES"].get(day)
+        if not expected:
+            return err("今天的通關碼尚未設定，請洽攤位人員", 503)
+        row = conn.execute("SELECT n FROM code_attempts WHERE user_id=? AND day=?",
+                           (uid, day)).fetchone()
+        if row and row["n"] >= rules.MAX_CODE_ATTEMPTS:
+            return err("今天嘗試次數已滿，請請攤位人員幫你完成這一站", 429)
+        given = str(body().get("code") or "").strip().upper()
+        if not given:
+            return err("請輸入攤位人員給你的通關碼")
+        if not hmac.compare_digest(given.encode(), expected.encode()):
+            conn.execute(
+                "INSERT INTO code_attempts(user_id, day, n) VALUES(?,?,1) "
+                "ON CONFLICT(user_id, day) DO UPDATE SET n=n+1", (uid, day))
+            return err("通關碼不對，請再向攤位人員確認一次")
+        rules.complete(conn, uid, 4, n, "code")
+        return jsonify({"ok": True, "state": me_state()})
+
+    @app.post("/api/station/5")
+    @need_user
+    @need_consent
+    def station5():
+        text = str(body().get("text") or "").strip()
+        if not text:
+            return err("請先寫下你的問題")
+        if len(text) > 200:
+            return err("問題請在 200 字以內")
+        conn, uid, n = db(), session["uid"], now()
+        conn.execute("INSERT INTO questions(user_id, text, at) VALUES(?,?,?)",
+                     (uid, text, rules.iso(n)))
+        rules.complete(conn, uid, 5, n, "online")
+        return jsonify({"ok": True, "state": me_state()})
+
+    @app.post("/api/reward/fallback")
+    @need_user
+    @need_consent
+    def take_fallback():
+        conn, uid, n = db(), session["uid"], now()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            u = rules.get_user(conn, uid)
+            status = rules.fallback_status(conn, u, rules.stations_done(conn, uid),
+                                           rules.claims_of(conn, uid), n)
+            if status == "available":
+                conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
+                             (uid, "fallback", rules.day_key(n), rules.iso(n)))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        if status != "available":
+            return err("目前不能改領折扣券")
+        return jsonify({"ok": True, "state": me_state()})
+
+    # ---------- 攤位人員 ----------
+
+    def by_code(code):
+        return db().execute("SELECT * FROM users WHERE code=?",
+                            (str(code or "").strip().upper(),)).fetchone()
+
+    def staff_view(u):
+        s = rules.state(db(), u["id"], now(), app.config)
+        return {"name": u["name"], "code": u["code"], "is_friend": s["is_friend"],
+                "count": s["count"], "stations": s["stations"],
+                "gummy": s["rewards"]["gummy"], "crampeace": s["rewards"]["crampeace"],
+                "today": s["today"]}
+
+    @app.post("/api/staff/lookup")
+    @need_staff
+    def staff_lookup():
+        u = by_code(body().get("code"))
+        if not u:
+            return err("找不到這個代碼", 404)
+        return jsonify({"ok": True, "user": staff_view(u)})
+
+    @app.post("/api/staff/mark")
+    @need_staff
+    def staff_mark():
+        """參加者無法自己輸入通關碼，或在現場口頭提問時，由人員代為完成第 4、5 站。"""
+        b, n = body(), now()
+        u = by_code(b.get("code"))
+        if not u:
+            return err("找不到這個代碼", 404)
+        if b.get("station") not in (4, 5):
+            return err("只能代為完成第 4 或第 5 站")
+        if not rules.event_day(n):
+            return err("只能在博覽會期間操作")
+        if not u["consent_at"]:
+            return err("對方尚未同意資料使用說明，請他先在任務卡上按同意")
+        rules.complete(db(), u["id"], b["station"], n, "staff")
+        return jsonify({"ok": True, "user": staff_view(u)})
+
+    @app.post("/api/staff/claim")
+    @need_staff
+    def staff_claim():
+        b, n, conn = body(), now(), db()
+        reward = b.get("reward")
+        if reward not in ("gummy", "crampeace"):
+            return err("獎勵種類不正確")
+        if not rules.event_day(n):
+            return err("只能在博覽會期間發放")
+        u = by_code(b.get("code"))
+        if not u:
+            return err("找不到這個代碼", 404)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            done, claims = rules.stations_done(conn, u["id"]), rules.claims_of(conn, u["id"])
+            fn = rules.gummy_status if reward == "gummy" else rules.crampeace_status
+            status = fn(conn, u, done, claims, n)
+            if status == "ready":
+                conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
+                             (u["id"], reward, rules.day_key(n), rules.iso(n)))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        if status != "ready":
+            return err("目前不能發放", 409, reason=status, user=staff_view(u))
+        return jsonify({"ok": True, "user": staff_view(u)})
+
+    @app.get("/api/staff/today")
+    @need_staff
+    def staff_today():
+        n, d = now(), rules.event_day(now())
+        out = {"day": rules.day_key(n), "is_event_day": bool(d)}
+        for r in ("gummy", "crampeace"):
+            out[r] = {"cap": d[r] if d else 0, "left": rules.left_today(db(), r, n)}
+        return jsonify({"ok": True, **out})
+
+    # ---------- 統計 ----------
+
+    @app.get("/api/admin/stats")
+    @need_admin
+    def admin_stats():
+        conn = db()
+        one = lambda q, *a: conn.execute(q, a).fetchone()[0]
+        rows = lambda q, *a: [dict(r) for r in conn.execute(q, a)]
+        return jsonify({
+            "ok": True,
+            "users": one("SELECT COUNT(*) FROM users"),
+            "friends": one("SELECT COUNT(*) FROM users WHERE is_friend=1"),
+            "consented": one("SELECT COUNT(*) FROM users WHERE consent_at IS NOT NULL"),
+            "invited": one("SELECT COUNT(*) FROM users WHERE invited_by IS NOT NULL"),
+            "questions": one("SELECT COUNT(*) FROM questions"),
+            "by_station": rows("SELECT station, COUNT(*) n FROM completions GROUP BY station ORDER BY station"),
+            "by_distance": rows("SELECT distance, COUNT(*) n FROM users WHERE distance IS NOT NULL GROUP BY distance"),
+            "new_by_day": rows("SELECT substr(created_at,1,10) day, COUNT(*) n FROM users GROUP BY day ORDER BY day"),
+            "claims": rows("SELECT day, reward, COUNT(*) n FROM claims GROUP BY day, reward ORDER BY day, reward"),
+            "top_inviters": rows(
+                "SELECT u.name, u.code, COUNT(*) n FROM users v JOIN users u ON u.id=v.invited_by "
+                "GROUP BY u.id ORDER BY n DESC LIMIT 20"),
+        })
+
+    @app.get("/api/admin/questions.csv")
+    @need_admin
+    def admin_questions():
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["時間", "代碼", "名稱", "距離", "問題"])
+        for r in db().execute(
+                "SELECT q.at, u.code, u.name, u.distance, q.text FROM questions q "
+                "JOIN users u ON u.id=q.user_id ORDER BY q.at"):
+            w.writerow(list(r))
+        return Response("﻿" + buf.getvalue(), mimetype="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=questions.csv"})
+
+    # ---------- 個資刪除（命令列）----------
+
+    @app.cli.command("delete-user")
+    def delete_user():
+        """flask delete-user：依 5 碼代碼刪除一位參加者的所有資料。"""
+        import click
+        code = click.prompt("參加者代碼").strip().upper()
+        conn = dbm.connect(app.config["DB_PATH"])
+        u = conn.execute("SELECT id, name FROM users WHERE code=?", (code,)).fetchone()
+        if not u:
+            click.echo("找不到這個代碼")
+            return
+        if click.confirm(f"確定刪除 {u['name']}（{code}）的所有資料？"):
+            conn.execute("UPDATE users SET invited_by=NULL WHERE invited_by=?", (u["id"],))
+            conn.execute("DELETE FROM users WHERE id=?", (u["id"],))
+            click.echo("已刪除")
+
+    return app
+
+
+if __name__ == "__main__":
+    os.environ.setdefault("DEV_MODE", "1")
+    create_app().run(debug=True, port=5057)

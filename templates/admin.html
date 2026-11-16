@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>活動數字｜PulsarPump 博覽會任務卡</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap wide">
+  <div class="brand"><i></i>活動數字</div>
+  <div id="out" class="stack" style="gap:20px"><p class="muted">載入中…</p></div>
+</div>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const token = new URLSearchParams(location.search).get('token') || '';
+const NAME = {gummy: '軟糖', crampeace: '勁速補', fallback: '備案折扣券', coupon5: '5 站折扣券', half: '半馬', full: '全馬', cheer: '陪跑／加油'};
+const STN = {1: '選距離', 2: '迷思題', 3: '揪跑友', 4: '攤位試喝', 5: '問黎醫師'};
+const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ? 'num' : ''}">${h}</th>`).join('')}</tr>${
+  rows.map(r => `<tr>${r.map((c, i) => `<td class="${i ? 'num' : ''}">${esc(c)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${head.length}">尚無資料</td></tr>`}</table>`;
+
+(async () => {
+  const r = await fetch('/api/admin/stats?token=' + encodeURIComponent(token));
+  const d = await r.json().catch(() => ({}));
+  const out = document.getElementById('out');
+  if (!d.ok) { out.innerHTML = `<p class="msg bad">${esc(d.error || '讀取失敗')}。請在網址後面加上 ?token=管理代碼</p>`; return; }
+  const tile = (label, n) => `<div class="fact"><span>${label}</span><b class="big">${n}</b></div>`;
+  out.innerHTML = `
+    <div class="tiles">${tile('開過任務卡', d.users)}${tile('其中已加好友', d.friends)}${tile('由朋友邀請而來', d.invited)}${tile('提問數', d.questions)}</div>
+    <section class="panel"><h3>各站完成人數</h3>${table(['站', '人數'], d.by_station.map(x => [x.station + '　' + STN[x.station], x.n]))}</section>
+    <section class="panel"><h3>每日新開卡人數</h3>${table(['日期', '人數'], d.new_by_day.map(x => [x.day, x.n]))}</section>
+    <section class="panel"><h3>獎勵發放</h3>${table(['日期', '獎勵', '份數'], d.claims.map(x => [x.day, NAME[x.reward] || x.reward, x.n]))}</section>
+    <section class="panel"><h3>距離</h3>${table(['距離', '人數'], d.by_distance.map(x => [NAME[x.distance] || x.distance, x.n]))}</section>
+    <section class="panel"><h3>邀請最多的人</h3>${table(['名稱（代碼）', '帶進人數'], d.top_inviters.map(x => [`${x.name}（${x.code}）`, x.n]))}</section>
+    <a class="btn" href="/api/admin/questions.csv?token=${encodeURIComponent(token)}">下載所有提問（CSV）</a>
+    <p class="note">「開過任務卡」包含尚未加好友的人。好友數的正式數字仍以 LINE 官方帳號後台為準。</p>`;
+})();
+</script>
+</body>
+</html>
