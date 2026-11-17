@@ -1,5 +1,6 @@
 // 任務卡前端。狀態一律以伺服器回傳為準，畫面只負責呈現。
-let CFG = null, S = null, flash = {};
+let CFG = null, S = null, flash = {}, seen = null;
+const STAMP = {1: '距離', 2: '迷思', 3: '跑友', 4: '試喝', 5: '提問'};
 const app = document.getElementById('app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const params = new URLSearchParams(location.search);
@@ -179,7 +180,7 @@ function rewardCoupon5() {
 function station(k, tags, title, body) {
   const done = S.stations[k];
   const tagHtml = tags.map(t => `<span class="tag ${t[0]}">${t[1]}</span>`).join('') + (done ? '<span class="tag ok">已完成</span>' : '');
-  return `<li class="stn ${done ? 'done' : ''}"><div class="mark">${done ? '✓' : k}</div>
+  return `<li class="stn ${done ? 'done' : ''}"><div class="mark">0${k}</div>
     <div class="card"><div class="tags">${tagHtml}</div><h3>${title}</h3>${body}</div></li>`;
 }
 
@@ -204,7 +205,7 @@ function render() {
     </section>`;
 
   const plan = S.distance ? '<table>' + CFG.plans[S.distance].map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join('') + '</table>' : '';
-  const s1 = `<div class="row">${[['half', '半馬'], ['full', '全馬'], ['cheer', '陪跑／加油']].map(d =>
+  const s1 = `<div class="row">${[['half', '半馬'], ['full', '全馬'], ['cheer', '陪跑加油']].map(d =>
       `<button data-act="dist" data-v="${d[0]}" class="${S.distance === d[0] ? 'sel' : ''}">${d[1]}</button>`).join('')}</div>
     ${plan}${draft}${msg('dist')}<p class="note">到攤位可以請我們依你的配速調整。</p>`;
 
@@ -232,13 +233,15 @@ function render() {
        <p class="note">不回答個人病情、用藥與檢查數值，這類狀況請直接就醫。</p>`;
 
   app.innerHTML = `${friend}
-    <section class="panel progress" aria-live="polite">
-      <div class="progress-top"><span class="muted">已完成</span><b>${S.count} / 5 站</b></div>
-      <div class="track"><i style="width:${S.count / 5 * 100}%"></i></div>
+    <section class="progress" aria-live="polite">
+      <div class="progress-top"><span class="muted">已蓋章</span><b>${S.count} / 5</b></div>
+      <div class="stamps" role="img" aria-label="已完成 ${S.count} 站，共 5 站">${[1, 2, 3, 4, 5].map(k => S.stations[k]
+        ? `<div class="slot done ${seen && !seen[k] ? 'new' : ''}">${STAMP[k]}</div>`
+        : `<div class="slot">${k}</div>`).join('')}</div>
       <div class="mycode"><span class="muted">出示給攤位人員的代碼</span><b>${esc(S.code)}</b></div>
     </section>
-    <section class="stack">${rewardGummy()}${rewardCrampeace()}${rewardCoupon5()}
-      <p class="note">實體獎勵每人各限領一次，每日限量，送完為止。</p></section>
+    <section class="rewards">${rewardGummy()}${rewardCrampeace()}${rewardCoupon5()}
+      <p class="note" style="padding-top:10px">實體獎勵每人各限領一次，每日限量，送完為止。</p></section>
     <ol class="route">
       ${station('1', [['online', '線上']], '選你的距離，拿一張補給時間表', s1)}
       ${station('2', [['online', '線上']], esc(CFG.myth.question), s2)}
@@ -247,6 +250,7 @@ function render() {
       ${station('5', [['onsite', '現場'], ['online', '或線上']], '問黎醫師一題', s5)}
     </ol>
     <p class="note">不去博覽會？活動結束後，完成 3 站的好友可以改領官網折扣券。</p>`;
+  seen = {...S.stations};
   bind();
 }
 

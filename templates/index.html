@@ -7,20 +7,22 @@
 <meta name="robots" content="noindex">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/card.css">
 </head>
 <body>
 <div class="wrap">
-  <div class="brand"><i></i>PulsarPump 脈衝星</div>
-  <section class="hero">
-    <div class="eyebrow">Expo Fuel Stations</div>
-    <h1>賽前先跑完這 5 個補給站</h1>
-    <p class="muted">線上 3 站在手機上完成，現場 2 站到博覽會攤位完成。找一位跑友一起，兩個人都有加碼。</p>
-    <div class="facts" id="facts"></div>
-    <p class="note" id="hours"></p>
-  </section>
-  <main id="app" class="stack" style="gap:20px"><p class="muted">載入中…</p></main>
+  <div class="sheet">
+    <div class="brand">PulsarPump 脈衝星<span>博覽會限定</span></div>
+    <section class="hero">
+      <h1>補給站<br>集章任務卡</h1>
+      <p>賽前跑完 5 個補給站，集滿印章換補給。線上 3 站用手機完成，現場 2 站到攤位蓋章。</p>
+      <div class="facts" id="facts"></div>
+      <p class="note" id="hours"></p>
+    </section>
+    <hr class="cut">
+    <main id="app" class="stack" style="gap:24px"><p class="muted">載入中…</p></main>
+  </div>
   <footer id="foot"></footer>
 </div>
 <script src="/static/app.js"></script>

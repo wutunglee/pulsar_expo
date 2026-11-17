@@ -1,0 +1,106 @@
+/* 任務卡（參加者頁）：一張紙本集章卡。米色紙、油墨黑字、橘紅印章、虛線撕口。
+   攤位核銷頁與統計頁仍用 style.css。 */
+:root{
+  color-scheme: light;
+  --desk:#e6dfd0; --paper:#f8f3e8; --paper-2:#fffdf7;
+  --ink:#1f1b16; --muted:#6a6052; --rule:#b8ac96;
+  --stamp:#c8401a;            /* 印泥色：品牌橘壓深，紙上才夠清楚 */
+  --bad:#a3271a;
+  --serif:"Noto Serif TC","Songti TC","PMingLiU",serif;
+  --sans:"Noto Sans TC",ui-sans-serif,system-ui,-apple-system,"PingFang TC",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--desk);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:480px;margin:0 auto;padding:14px 12px 40px}
+.sheet{background:var(--paper);padding:26px 22px 28px;position:relative;box-shadow:0 1px 0 rgba(31,27,22,.08),0 10px 24px rgba(31,27,22,.10)}
+/* 上下緣的撕口齒孔 */
+.sheet::before,.sheet::after{content:"";position:absolute;left:0;right:0;height:8px;background:radial-gradient(circle at 8px 0,var(--desk) 5px,transparent 5.5px) 0 0/16px 8px repeat-x}
+.sheet::before{top:0}
+.sheet::after{bottom:0;transform:scaleY(-1)}
+p{margin:0}
+a{color:var(--ink)}
+h1{font-family:var(--serif);font-size:36px;line-height:1.2;font-weight:900;margin:0;letter-spacing:.02em}
+h3{font-size:19px;font-weight:700;margin:0;line-height:1.45}
+.muted{color:var(--muted)}
+.note{font-size:16px;color:var(--muted)}
+.stack{display:flex;flex-direction:column;gap:12px}
+[hidden]{display:none!important}
+
+/* 卡頭 */
+.brand{display:flex;justify-content:space-between;align-items:baseline;font-size:14px;font-weight:700;letter-spacing:.08em;border-bottom:2px solid var(--ink);padding-bottom:8px;margin-bottom:18px}
+.brand span{font-weight:500;color:var(--muted);letter-spacing:.04em}
+.hero{display:flex;flex-direction:column;gap:12px}
+.facts{margin-top:4px}
+.fact{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-bottom:1px dotted var(--rule);font-size:16px}
+.fact span{color:var(--muted);white-space:nowrap}
+.fact b{font-weight:700;text-align:right}
+.cut{border:0;border-top:2px dashed var(--rule);margin:24px -22px;position:relative}
+.cut::before,.cut::after{content:"";position:absolute;top:-10px;width:18px;height:18px;border-radius:50%;background:var(--desk)}
+.cut::before{left:-9px}.cut::after{right:-9px}
+
+/* 集章格 */
+.progress{display:flex;flex-direction:column;gap:14px}
+.progress-top{display:flex;justify-content:space-between;align-items:baseline}
+.progress-top b{font-family:var(--serif);font-size:26px;font-weight:900;font-variant-numeric:tabular-nums}
+.stamps{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.slot{aspect-ratio:1;border-radius:50%;border:1.5px dashed var(--rule);display:grid;place-items:center;color:var(--rule);font-family:var(--serif);font-weight:900;font-size:20px;position:relative}
+.slot.done{border:2.5px solid var(--stamp);color:var(--stamp);font-size:17px;letter-spacing:.04em;box-shadow:inset 0 0 0 3px var(--paper),inset 0 0 0 4px var(--stamp);opacity:.92}
+.slot.done:nth-child(1){transform:rotate(-9deg)}
+.slot.done:nth-child(2){transform:rotate(6deg)}
+.slot.done:nth-child(3){transform:rotate(-4deg)}
+.slot.done:nth-child(4){transform:rotate(10deg)}
+.slot.done:nth-child(5){transform:rotate(-6deg)}
+.slot.new{animation:stamp .38s cubic-bezier(.2,1.4,.4,1) both}
+@keyframes stamp{from{scale:1.9;opacity:0}to{scale:1;opacity:.92}}
+.mycode{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:16px;border:1.5px solid var(--ink);padding:10px 14px;background:var(--paper-2)}
+.mycode b{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:27px;letter-spacing:.2em;font-weight:700}
+
+/* 兌換券 */
+.rewards{display:flex;flex-direction:column}
+.reward{display:grid;grid-template-columns:1fr;gap:4px;padding:12px 0;border-bottom:1px dotted var(--rule);font-size:16px;color:var(--muted)}
+.reward b{font-size:17px;font-weight:700;color:var(--ink)}
+.reward.on b::before,.reward.warn b::before{content:"可領";display:inline-block;font-size:14px;border:1.5px solid var(--stamp);color:var(--stamp);padding:0 6px;margin-right:8px;transform:rotate(-4deg);line-height:1.5}
+.reward.warn b::before{content:"注意";border-color:var(--ink);color:var(--ink)}
+.reward.on{color:var(--ink)}
+.reward button{margin-top:6px}
+.coupon{display:block;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:24px;font-weight:700;letter-spacing:.1em;color:var(--ink);border:1.5px dashed var(--ink);padding:6px 12px;margin:4px 0;background:var(--paper-2);text-align:center}
+
+/* 提醒區塊（同意說明、加好友） */
+.panel{display:flex;flex-direction:column;gap:12px}
+.panel.alert{border:2px solid var(--ink);padding:18px 18px 20px;background:var(--paper-2)}
+
+/* 五個補給站 */
+ol.route{list-style:none;margin:0;padding:0}
+.stn{display:flex;flex-direction:column;gap:6px;padding:20px 0;border-top:1px solid var(--ink);position:relative}
+.stn:first-child{border-top:2px solid var(--ink)}
+.mark{font-family:var(--serif);font-size:30px;font-weight:900;line-height:1.1;color:var(--ink)}
+.stn.done .mark{color:var(--rule)}
+.card{display:flex;flex-direction:column;gap:12px;min-width:0}
+.tags{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px;font-weight:700;letter-spacing:.08em;color:var(--muted)}
+.tag.onsite{color:var(--ink);border-bottom:2px solid var(--stamp)}
+.tag.ok{position:absolute;right:0;top:16px;color:var(--stamp);border:2px solid var(--stamp);padding:0 8px;transform:rotate(5deg);letter-spacing:.1em;background:var(--paper)}
+
+/* 按鈕與輸入 */
+button,.btn{font:inherit;color:var(--ink);cursor:pointer;border-radius:4px;border:1.5px solid var(--ink);background:transparent;padding:12px 14px;font-weight:700;font-size:17px;text-decoration:none;text-align:center;display:block;transition:transform .12s,background .12s}
+button:active,.btn:active{transform:translateY(1px)}
+button[disabled]{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{outline:2px solid var(--stamp);outline-offset:2px}
+.primary{background:var(--ink);color:var(--paper);width:100%}
+button.sel{background:var(--stamp);border-color:var(--stamp);color:#fff}
+.row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.codebox{display:grid;grid-template-columns:1fr auto;gap:8px}
+input,textarea{font:inherit;font-size:17px;color:var(--ink);background:var(--paper-2);border:1.5px solid var(--rule);border-radius:4px;padding:11px 12px;width:100%}
+input::placeholder,textarea::placeholder{color:#9b907e}
+textarea{min-height:88px;resize:vertical}
+label{font-size:16px;color:var(--muted);display:flex;flex-direction:column;gap:6px}
+table{width:100%;border-collapse:collapse;font-size:16px;background:var(--paper-2);border:1px solid var(--rule)}
+td{padding:8px 10px;border-bottom:1px dotted var(--rule);vertical-align:top;text-align:left}
+tr:last-child td{border-bottom:0}
+td:first-child{color:var(--muted);white-space:nowrap;font-weight:700}
+.msg{font-size:16px}
+.msg.ok{color:var(--ink);font-weight:700;border-left:3px solid var(--stamp);padding-left:10px}
+.msg.bad{color:var(--bad)}
+footer{font-size:14px;color:var(--muted);padding:18px 10px 0;line-height:1.6}
+@media (prefers-reduced-motion:reduce){.slot.new{animation:none}button,.btn{transition:none}}
+@media (max-width:360px){h1{font-size:31px}.sheet{padding:24px 16px}.cut{margin:22px -16px}.row{grid-template-columns:1fr}}
