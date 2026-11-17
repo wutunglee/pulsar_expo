@@ -1,5 +1,5 @@
 // 兌換券前端。狀態一律以伺服器回傳為準，畫面只負責呈現。
-let CFG = null, S = null, flash = {}, editDistance = false;
+let CFG = null, S = null, flash = {}, editDistance = false, planOpen = false, askCode = false;
 const DIST = {half: '半馬', full: '全馬', cheer: '陪跑加油'};
 const app = document.getElementById('app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -87,10 +87,8 @@ async function boot() {
   try {
     CFG = await api('/api/config');
     const ev = CFG.event;
-    document.getElementById('facts').innerHTML =
-      [['博覽會', ev.name], ['日期', '12/17（四）–12/19（六）'], ['地點', ev.venue], ['攤位', ev.booth]]
-        .map(f => `<div class="fact"><span>${esc(f[0])}</span><b>${esc(f[1])}</b></div>`).join('');
-    document.getElementById('hours').textContent = ev.hours;
+    document.getElementById('facts').innerHTML = ev.facts
+      .map(([k, v]) => `<div class="fact"><span>${esc(k)}</span><b>${esc(v).replace(/\n/g, '<br>')}</b></div>`).join('');
     document.getElementById('foot').innerHTML = esc(CFG.disclaimer) + '<br>© 2020–2026 PulsarPump 脈衝星 ｜ service@pulsarpump.com';
     if (await openSession()) render();
   } catch (e) {
@@ -188,9 +186,12 @@ function teamBlock() {
       <div class="extra-head"><span class="plus">加碼二</span><h3>揪一位新朋友，兩人各拿勁速補 1 包</h3></div>
       <p class="muted">${status}</p>
       ${canInvite ? `<button class="${S.team_qualified ? '' : 'primary'}" data-act="invite">${S.has_partner ? '再邀請一位' : '傳邀請給跑友'}</button>${msg('invite')}
-      <p class="note">你的邀請碼：<b>${esc(S.code)}</b></p>` : ''}
-      ${canInvite && !S.invited && !S.has_partner ? `<div class="codebox"><input id="refcode" placeholder="朋友的邀請碼" maxlength="5" autocomplete="off" autocapitalize="characters" aria-label="朋友的邀請碼">
-        <button data-act="ref">加入他的隊</button></div>${msg('ref')}` : ''}
+      <p class="note">朋友點你傳的連結、加好友領券，就會自動跟你一隊，不用輸入任何代碼。</p>` : ''}
+      ${canInvite && !S.invited && !S.has_partner ? (askCode || flash.ref
+        ? `<p class="note">正常情況不用輸入：點朋友傳來的連結領券，就會自動配對。沒配對到時，請朋友把他的兌換代碼告訴你，填在這裡。</p>
+        <div class="codebox"><input id="refcode" placeholder="朋友的兌換代碼" maxlength="5" autocomplete="off" autocapitalize="characters" aria-label="朋友的兌換代碼">
+        <button data-act="ref">跟他一隊</button></div>${msg('ref')}`
+        : `<p class="note"><button class="link" data-act="askcode">是朋友邀你來的，但沒有顯示組隊？</button></p>`) : ''}
     </section>`;
 }
 
@@ -267,7 +268,7 @@ function render() {
       ${CFG.reviewed ? '' : '<p class="note">內容為草稿，待黎醫師確認。</p>'}
       ${S.plan_sent ? `<p class="note">這張表也傳到你的 LINE 了。之後在 PulsarPump 聊天室輸入「補給表」，隨時可以再拿一次。</p>` : CFG.identity === 'oa' ? `<p class="note">在 PulsarPump 聊天室輸入「補給表」，就會把這張表傳給你。</p>` : ''}
       <p class="note">到攤位可以請我們依你的配速調整。${S.arrived ? '' : ' <button class="link" data-act="redist">改距離</button>'}</p>
-      ${editDistance ? distButtons : ''}
+      ${editDistance ? distButtons : msg('dist')}
     </details>
     ${onsiteBlock()}
     ${quizBlock()}
@@ -286,7 +287,8 @@ function render() {
 function bind() {
   app.querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', () => {
     const a = el.dataset.act, v = el.dataset.v;
-    if (a === 'redist') { editDistance = !editDistance; return render(); }
+    if (a === 'redist') { editDistance = !editDistance; planOpen = true; return render(); }
+    if (a === 'askcode') { askCode = !askCode; return render(); }
     el.disabled = true;
     if (a === 'consent') return act('consent', () => api('/api/consent', {}));
     if (a === 'refresh') return act('refresh', async () => {
@@ -296,7 +298,16 @@ function bind() {
         : CFG.friend_check === 'oa' ? `還沒偵測到。加入後在聊天室輸入「${CFG.keyword}」再試一次。`
         : '還沒偵測到好友狀態，加入後再按一次。', bad: true};
     });
-    if (a === 'dist') { editDistance = false; return act('dist', () => api('/api/distance', {distance: v})); }
+    if (a === 'dist') {
+      // 第一次選：回到券的開頭看保留清單。之後改距離：留在原地、時間表保持展開
+      const first = !S.distance;
+      editDistance = false;
+      if (!first) planOpen = true;
+      return act('dist', async () => {
+        const r = await api('/api/distance', {distance: v});
+        return first ? r : {state: r.state, note: `已改成${DIST[v]}，時間表也換好了。`};
+      }).then(() => { if (first) app.scrollIntoView({block: 'start'}); });
+    }
     if (a === 'quiz') return act('quiz', () => api('/api/quiz', {q: Number(el.dataset.q), answer: v === '1'}));
     if (a === 'invite') return act('invite', invite);
     if (a === 'ref') return act('ref', () => api('/api/ref', {code: document.getElementById('refcode').value}));
@@ -306,7 +317,8 @@ function bind() {
     });
   }));
   // 改距離時時間表要保持展開
-  if (editDistance) { const d = app.querySelector('details.plan'); if (d) d.open = true; }
+  const d = app.querySelector('details.plan');
+  if (d) { d.open = planOpen; d.addEventListener('toggle', () => { planOpen = d.open; }); }
 }
 
 boot();

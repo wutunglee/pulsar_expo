@@ -309,7 +309,7 @@ def create_app(test_config=None):
         if rules.get_user(db(), uid)["invited_by"]:
             return err("你已經有隊友了")
         if not set_inviter(uid, body().get("code")):
-            return err("邀請碼不對，請再向朋友確認一次")
+            return err("代碼不對，請再向朋友確認一次")
         return jsonify({"ok": True, "state": me_state()})
 
     # ---------- LINE 官方帳號 webhook ----------
