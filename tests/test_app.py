@@ -227,21 +227,24 @@ class TestCapsAndCoupons(Base):
         r = self.checkin("late").get_json()
         self.assertEqual(r["given"], [])
         self.assertTrue(self.me("late")["arrived"])          # 沒拿到軟糖，但到場仍算數
-        self.assertEqual(self.me("late")["rewards"]["onsite"], "ready")
         self.clock = at("2026-12-18 13:00")
         self.assertEqual(self.checkin("late").get_json()["given"], ["gummy"])
 
-    def test_onsite_coupon_after_arrival_once(self):
+    def test_onsite_coupon_visible_early_used_once_on_site(self):
+        self.assertEqual(self.join("x", distance=None)["rewards"]["onsite"], "locked")
         a = self.join("a")
-        self.assertEqual(a["rewards"]["onsite"], "locked")
+        self.assertEqual((a["rewards"]["onsite"], a["rewards"]["onsite_text"]), ("ready", "現場折 100"))
+        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 400)  # 還沒到展期
         self.clock = at("2026-12-17 13:00")
-        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 409)
-        self.checkin("a")
-        s = self.me("a")
-        self.assertEqual((s["rewards"]["onsite"], s["rewards"]["onsite_text"]), ("ready", "現場折 100"))
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)
-        self.assertEqual(self.me("a")["rewards"]["onsite"], "used")
+        s = self.me("a")
+        self.assertEqual(s["rewards"]["onsite"], "used")
+        self.assertTrue(s["arrived"])                       # 結帳也算到場
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 409)
+        self.assertEqual(self.checkin("a").get_json()["given"], ["gummy"])   # 軟糖照樣可以領
+        self.join("b")
+        self.clock = at("2026-12-20 09:00")
+        self.assertEqual(self.me("b")["rewards"]["onsite"], "ended")
 
     def test_absent_coupon_only_after_event_for_no_shows(self):
         self.join("came"); self.join("missed"); self.join("nofriend", friend=False)
@@ -256,6 +259,10 @@ class TestCapsAndCoupons(Base):
 
 
 class TestStaffAndAdmin(Base):
+    def test_pages_render(self):
+        for path in ("/", "/staff", "/admin", "/healthz"):
+            self.assertEqual(self.app.test_client().get(path).status_code, 200, path)
+
     def test_pin_required(self):
         a = self.join("a")
         self.assertEqual(self.staff("/api/staff/lookup", pin="0000", code=a["code"]).status_code, 401)

@@ -59,17 +59,19 @@ async function today() {
   $('day').textContent = r.day + (r.is_event_day ? '' : '（非展期，不能報到）');
   $('gLeft').textContent = r.gummy.left; $('gCap').textContent = '共 ' + r.gummy.cap + ' 份';
   $('bLeft').textContent = r.bonus.left; $('bCap').textContent = '共 ' + r.bonus.cap + ' 條';
-  $('cLeft').textContent = r.crampeace.left; $('cCap').textContent = '共 ' + r.crampeace.cap + ' 份';
+  $('cLeft').textContent = r.crampeace.left; $('cCap').textContent = '共 ' + r.crampeace.cap + ' 包';
   return true;
 }
 
 const DIST = {half: '半馬', full: '全馬', cheer: '陪跑加油'};
 const GIVE = {gummy: '軟糖 2 條', bonus: '加碼軟糖 1 條', crampeace: '勁速補 1 包'};
+const ONSITE = {locked: '還沒領券', used: '已使用', ended: '活動已結束'};
 const ST = {locked: '未達成', waiting_partner: '等隊友到攤位', ready: '可以發', out_today: '今日已送完', ended: '活動已結束', claimed: '已領過'};
 
 function show(u, note) {
   const r = u.rewards;
   const row = (key, name) => `<div class="reward ${r[key] === 'ready' ? 'on' : ''}"><b>${name}</b><span>${ST[r[key]]}</span></div>`;
+  const onsiteLabel = r.onsite === 'ready' ? esc(r.onsite_text || '可以使用') : ONSITE[r.onsite];
   const ready = ['gummy', 'bonus', 'crampeace'].some(k => r[k] === 'ready');
   $('user').hidden = false;
   $('user').innerHTML = `
@@ -86,8 +88,8 @@ function show(u, note) {
     ${note || ''}
     ${row('gummy', '軟糖 2 條')}${row('bonus', '答題加碼 1 條')}${row('crampeace', '揪新朋友：勁速補 1 包')}
     <button class="primary" id="checkin" ${u.arrived && !ready ? 'disabled' : ''}>${u.arrived ? (ready ? '發放加碼並記錄' : '目前沒有可發的') : '報到並發放'}</button>
-    <div class="reward ${r.onsite === 'ready' ? 'on' : ''}"><b>現場優惠券</b><span>${{locked: '報到後才有', ready: esc(r.onsite_text || '可以使用'), used: '已使用'}[r.onsite]}</span>
-      ${r.onsite === 'ready' ? '<button id="onsite">結帳時按這裡：標記已使用</button>' : ''}</div>`;
+    <div class="reward ${r.onsite === 'ready' ? 'on' : ''}"><b>現場優惠券</b><span>${onsiteLabel}</span>
+      ${r.onsite === 'ready' ? '<button id="onsite">客人結帳了：標記已使用</button>' : ''}</div>`;
   const fb = $('okFriend');
   if (fb) fb.onclick = async () => {
     fb.disabled = true;

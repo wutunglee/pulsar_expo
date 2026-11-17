@@ -43,8 +43,8 @@ function demoState() {
       gummy: D.got.gummy ? 'claimed' : !D.distance ? 'locked' : stock,
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
-      onsite: D.got.onsite ? 'used' : D.arrived ? 'ready' : 'locked', onsite_text: '現場優惠（內容待定）',
-      absent: absent, absent_code: absent ? 'DEMO100' : ''},
+      onsite: D.got.onsite ? 'used' : !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_text: '全品項 88 折',
+      absent: absent, absent_code: absent ? 'EV-DEMO-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
 async function api(path, data) {
@@ -81,8 +81,8 @@ function demoDo(a) {
     D.partnerArrived = true;
   }
   if (a === 'pay') {
-    if (!D.arrived) { tip.textContent = '要先到攤位報到，才有現場優惠券。'; return; }
-    D.got.onsite = true;
+    if (!D.eventDay) { tip.textContent = '現場優惠券只能在博覽會當天用，先切到博覽會當天。'; return; }
+    D.got.onsite = true; D.arrived = true;
   }
   if (a === 'over') { D.eventDay = false; D.over = true; }
   S = demoState(); flash = {}; render();

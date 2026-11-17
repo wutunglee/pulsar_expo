@@ -57,8 +57,9 @@ def create_app(test_config=None):
         PUBLIC_URL=env("PUBLIC_URL", "").rstrip("/"),
         STAFF_PIN=env("STAFF_PIN", ""),
         ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
-        ONSITE_OFFER=env("ONSITE_OFFER", ""),     # 現場優惠券上的文字，例如「現場消費折 100 元」
+        ONSITE_OFFER=env("ONSITE_OFFER", "全品項 88 折"),   # 現場優惠券上的文字
         COUPON_ABSENT=env("COUPON_ABSENT", ""),   # 沒到攤位的人，活動後看到的官網折扣碼
+        COUPON_ABSENT_TEXT=env("COUPON_ABSENT_TEXT", "滿 2,000 元折 250 元，2027/1/19 前有效"),
         NOW_FN=None,  # 測試時可換成固定時間
         PERMANENT_SESSION_LIFETIME=timedelta(days=60),
         SESSION_COOKIE_HTTPONLY=True,
@@ -478,23 +479,27 @@ def create_app(test_config=None):
     @app.post("/api/staff/onsite")
     @need_staff
     def staff_onsite():
-        """結帳時使用現場優惠券。每人一次。"""
+        """結帳時使用現場優惠券。每人一次。會順便記下到場。"""
         n, conn = now(), db()
+        if not rules.event_day(n):
+            return err("現場優惠券只能在博覽會期間使用")
         u = by_code(body().get("code"))
         if not u:
             return err("找不到這個代碼", 404)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            status = rules.onsite_status(u, rules.claims_of(conn, u["id"]))
+            status = rules.onsite_status(u, rules.claims_of(conn, u["id"]), n)
             if status == "ready":
                 conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
                              (u["id"], "onsite", rules.day_key(n), rules.iso(n)))
+                conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
+                             (rules.iso(n), u["id"]))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
         if status != "ready":
-            return err("已經用過了" if status == "used" else "要先報到才能使用現場優惠",
+            return err("已經用過了" if status == "used" else "對方還沒加好友或還沒選距離",
                        409, reason=status, user=staff_view(u))
         return jsonify({"ok": True, "user": staff_view(u)})
 

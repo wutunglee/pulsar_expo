@@ -196,15 +196,12 @@ function teamBlock() {
 
 function onsiteBlock() {
   const r = S.rewards, offer = esc(r.onsite_text || '現場優惠');
-  if (r.onsite === 'locked') return `<section class="extra">
-      <div class="extra-head"><span class="plus">現場限定</span><h3>到攤位後，這裡會出現現場優惠券</h3></div>
-      <p class="muted">當場購買才能使用。</p></section>`;
-  if (r.onsite === 'used') return `<section class="extra">
-      <div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠券</h3></div>
-      <div class="coupon used">${offer}<small>已使用</small></div></section>`;
-  return `<section class="extra">
-      <div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠券</h3></div>
-      <div class="coupon">${offer}<small>結帳時把這個畫面給工作人員看</small></div>
+  const head = '<div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠券</h3></div>';
+  if (r.onsite === 'locked') return '';
+  if (r.onsite === 'used') return `<section class="extra">${head}<div class="coupon used">${offer}<small>已使用</small></div></section>`;
+  if (r.onsite === 'ended') return `<section class="extra">${head}<div class="coupon used">${offer}<small>博覽會已結束</small></div></section>`;
+  return `<section class="extra">${head}
+      <div class="coupon">${offer}<small>${S.today.is_event_day ? '結帳時把這個畫面給工作人員看' : `12/17–12/19 在 ${esc(CFG.event.booth)} 攤位結帳時出示`}</small></div>
       <p class="note">限博覽會現場使用，每人一次。</p></section>`;
 }
 
@@ -242,8 +239,8 @@ function render() {
   if (S.rewards.absent) {
     app.innerHTML = `<section class="panel alert">
         <h3>這次沒遇到你，送你一張官網折扣券</h3>
-        <span class="coupon">${esc(S.rewards.absent_code)}</span>
-        <p class="muted">到 pulsarpump.com 結帳時輸入。</p>
+        <span class="coupon">${esc(S.rewards.absent_code)}<small>${esc(S.rewards.absent_text)}</small></span>
+        <p class="muted">到 www.pulsarpump.com 結帳時輸入。</p>
       </section>`;
     return bind();
   }
@@ -272,13 +269,13 @@ function render() {
       <p class="note">到攤位可以請我們依你的配速調整。${S.arrived ? '' : ' <button class="link" data-act="redist">改距離</button>'}</p>
       ${editDistance ? distButtons : ''}
     </details>
+    ${onsiteBlock()}
     ${quizBlock()}
     ${teamBlock()}
-    ${onsiteBlock()}
     <section class="extra">
-      <div class="extra-head"><span class="plus">想問就問</span><h3>有問題想問黎醫師？</h3></div>
-      ${S.asked ? `<p class="muted">問題收到了。精選題目會拍成「醫師說」影片，被選上會通知你。</p>${msg('ask')}` : ''}
-      <label for="q">${S.asked ? '還想再問一題' : '寫在這裡，或到攤位當面問'}<textarea id="q" maxlength="200" placeholder="例如：全馬 30K 後胃口很差，還要硬吃嗎？"></textarea></label>
+      <div class="extra-head"><span class="plus">問黎醫師</span><h3>補給、訓練的問題，先寫下來</h3></div>
+      <p class="muted">${S.asked ? '問題收到了。' : ''}黎醫師會在活動後，從 PulsarPump 的 LINE 官方帳號逐一回覆。想當面問，也歡迎到攤位。</p>${S.asked ? msg('ask') : ''}
+      <label for="q">${S.asked ? '還想再問一題' : '你的問題'}<textarea id="q" maxlength="200" placeholder="例如：全馬 30K 後胃口很差，還要硬吃嗎？"></textarea></label>
       <button data-act="ask">送出問題</button>${S.asked ? '' : msg('ask')}
       <p class="note">不回答個人病情、用藥與檢查數值，這類狀況請直接就醫。</p>
     </section>
@@ -305,7 +302,7 @@ function bind() {
     if (a === 'ref') return act('ref', () => api('/api/ref', {code: document.getElementById('refcode').value}));
     if (a === 'ask') return act('ask', async () => {
       const r = await api('/api/ask', {text: document.getElementById('q').value});
-      return {state: r.state, note: '問題收到了。'};
+      return {state: r.state, note: '已送出。'};
     });
   }));
   // 改距離時時間表要保持展開

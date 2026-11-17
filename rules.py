@@ -6,7 +6,7 @@
   - 加好友＋選距離 → 兌換券。到攤位報到：實體補給時間表、試喝、軟糖 2 條。
   - 加碼一：答完 3 題真的假的（不論對錯）→ 再 1 條軟糖。
   - 加碼二：揪一位「新加入的好友」，兩人都到攤位 → 各 1 包勁速補。
-  - 到過攤位的人有現場優惠券；沒來的人活動後看到官網折扣碼。
+  - 現場優惠券領券後就看得到，限博覽會現場結帳使用；沒來的人活動後看到官網折扣碼。
 """
 import hashlib
 from datetime import datetime
@@ -154,11 +154,13 @@ def crampeace_status(db, u, claims, n):
     return _stock(db, "crampeace", n)
 
 
-def onsite_status(u, claims):
-    """現場優惠券：到攤位報到後出現，結帳時由工作人員按「已使用」。"""
+def onsite_status(u, claims, n):
+    """現場優惠券：領券後就看得到，博覽會現場結帳時由工作人員按「已使用」，每人一次。"""
     if "onsite" in claims:
         return "used"
-    return "ready" if u["arrived_at"] else "locked"
+    if not u["is_friend"] or not u["distance"]:
+        return "locked"
+    return "ended" if event_over(n) else "ready"
 
 
 def absent_coupon(u, n):
@@ -200,10 +202,11 @@ def state(db, uid, n, cfg, quiz_pool):
             "gummy": gummy_status(db, u, claims, n),
             "bonus": bonus_status(db, u, claims, n, len(quiz_pool)),
             "crampeace": crampeace_status(db, u, claims, n),
-            "onsite": onsite_status(u, claims),
+            "onsite": onsite_status(u, claims, n),
             "onsite_text": cfg.get("ONSITE_OFFER", ""),
             "absent": absent,
             "absent_code": cfg.get("COUPON_ABSENT", "") if absent else "",
+            "absent_text": cfg.get("COUPON_ABSENT_TEXT", ""),
         },
         "today": {
             "is_event_day": bool(d),
