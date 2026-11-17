@@ -6,7 +6,8 @@
   - 加好友＋選距離 → 兌換券。到攤位報到：實體補給時間表、試喝、軟糖 2 條。
   - 加碼一：答完 3 題真的假的（不論對錯）→ 再 1 條軟糖。
   - 加碼二：揪一位「新加入的好友」，兩人都到攤位 → 各 1 包勁速補。
-  - 現場優惠用抽的（每人一次，主機決定）：兩件以上 88 折／第二件 5 折／93 折加贈勁速補；
+  - 現場優惠用抽的：主機先洗好 8 張牌，客人選一張後全部翻開（88 折 4 張、93 折加贈 3 張、
+    第二件 5 折 1 張）；
     只買一件保底 93 折。限博覽會現場結帳使用，不限次數、只記錄；沒來的人活動後看到官網折扣碼。
 """
 import hashlib
@@ -24,9 +25,10 @@ EVENT_DAYS = {
 }
 PHYSICAL = ("gummy", "bonus", "crampeace")
 
-# 現場優惠抽獎：(代號, 權重)。結果只在主機決定，前端拿不到清單與機率。
+# 現場優惠抽獎：一副牌裡每種獎各幾張。機率＝張數／總張數。
+# 8 張（4、3、1）的平均讓利與固定全品項 88 折打平；改這裡只影響之後才發的牌。
 # 文字在 content.PRIZES。保底：只買一件也有 93 折（所有人）。
-PRIZE_WEIGHTS = (("p88", 60), ("half", 25), ("gift", 15))
+DECK = (("p88", 4), ("gift", 3), ("half", 1))
 QUIZ_SIZE = 3
 DISTANCES = ("half", "full", "cheer")
 
@@ -160,24 +162,51 @@ def crampeace_status(db, u, claims, n):
     return _stock(db, "crampeace", n)
 
 
+def get_draw(db, uid):
+    return db.execute("SELECT * FROM draws WHERE user_id=?", (uid,)).fetchone()
+
+
 def prize_of(db, uid):
-    r = db.execute("SELECT prize FROM draws WHERE user_id=?", (uid,)).fetchone()
+    r = get_draw(db, uid)
     return r["prize"] if r else None
 
 
-def draw_prize(db, uid, n):
-    """抽一次並存起來；已經抽過就回傳原本的結果，不會重抽。"""
-    got = prize_of(db, uid)
-    if got:
-        return got
-    total = sum(w for _, w in PRIZE_WEIGHTS)
-    pick, acc = secrets.randbelow(total), 0
-    for key, w in PRIZE_WEIGHTS:
-        acc += w
-        if pick < acc:
-            break
-    db.execute("INSERT OR IGNORE INTO draws(user_id, prize, at) VALUES(?,?,?)", (uid, key, iso(n)))
+def deal(db, uid, n):
+    """洗一副牌存起來。在客人看到牌背之前就做，之後他選哪一張都對應這副牌。"""
+    if get_draw(db, uid):
+        return
+    cards = [key for key, count in DECK for _ in range(count)]
+    for i in range(len(cards) - 1, 0, -1):          # Fisher–Yates，用系統亂數
+        k = secrets.randbelow(i + 1)
+        cards[i], cards[k] = cards[k], cards[i]
+    db.execute("INSERT OR IGNORE INTO draws(user_id, hand, dealt_at) VALUES(?,?,?)",
+               (uid, ",".join(cards), iso(n)))
+
+
+def pick_card(db, uid, pick, n):
+    """選一張。已經選過就不變。回傳抽到的獎，位置不合法回傳 None。"""
+    r = get_draw(db, uid)
+    if not r:
+        return None
+    if r["prize"]:
+        return r["prize"]
+    hand = r["hand"].split(",")
+    if not isinstance(pick, int) or isinstance(pick, bool) or not 0 <= pick < len(hand):
+        return None
+    db.execute("UPDATE draws SET pick=?, prize=?, at=? WHERE user_id=? AND prize IS NULL",
+               (pick, hand[pick], iso(n), uid))
     return prize_of(db, uid)
+
+
+def draw_view(db, uid):
+    """給前端的抽獎狀態。還沒選之前只給張數，不給牌面。"""
+    r = get_draw(db, uid)
+    if not r:
+        return {"cards": 0, "prize": None}
+    hand = r["hand"].split(",")
+    if not r["prize"]:
+        return {"cards": len(hand), "prize": None}
+    return {"cards": len(hand), "prize": r["prize"], "pick": r["pick"], "hand": hand}
 
 
 def onsite_status(u, n):
@@ -230,7 +259,7 @@ def state(db, uid, n, cfg, quiz_pool):
             "onsite": onsite_status(u, n),
             "onsite_uses": db.execute("SELECT COUNT(*) c FROM onsite_uses WHERE user_id=?",
                                       (uid,)).fetchone()["c"],
-            "prize": prize_of(db, uid),
+            **draw_view(db, uid),
             "absent": absent,
             "absent_code": cfg.get("COUPON_ABSENT", "") if absent else "",
             "absent_text": cfg.get("COUPON_ABSENT_TEXT", ""),

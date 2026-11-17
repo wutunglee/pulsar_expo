@@ -237,7 +237,7 @@ class TestCapsAndCoupons(Base):
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 400)  # 還沒到展期
         self.clock = at("2026-12-17 13:00")
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).get_json()["reason"], "no_prize")
-        self.post("a", "/api/draw")
+        self.post("a", "/api/draw", pick=2)
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)  # 不限次數
         s = self.me("a")
@@ -251,28 +251,34 @@ class TestCapsAndCoupons(Base):
         self.clock = at("2026-12-20 09:00")
         self.assertEqual(self.me("b")["rewards"]["onsite"], "ended")
 
-    def test_draw_once_server_side(self):
-        self.assertEqual(self.post("x", "/api/draw").status_code, 401)
+    def test_draw_deals_first_then_pick_reveals_real_hand(self):
+        self.assertEqual(self.post("x", "/api/draw", pick=0).status_code, 401)
         self.join("n", distance=None)
-        self.assertEqual(self.post("n", "/api/draw").status_code, 400)      # 還沒選距離
-        self.join("a")
-        first = self.post("a", "/api/draw").get_json()["state"]["rewards"]["prize"]
-        self.assertIn(first, ("p88", "half", "gift"))
-        for _ in range(5):                                                  # 重抽不會變
-            self.assertEqual(self.post("a", "/api/draw").get_json()["state"]["rewards"]["prize"], first)
-        cfg = self.c("a").get("/api/config").get_json()
-        self.assertNotIn("weights", json.dumps(cfg))                        # 機率不外流
-        self.assertNotIn("60", json.dumps(cfg["prizes"]))
-
-    def test_draw_distribution_roughly_matches_weights(self):
+        self.assertEqual(self.post("n", "/api/draw", pick=0).status_code, 400)   # 還沒選距離
+        a = self.join("a")["rewards"]
+        self.assertEqual((a["cards"], a["prize"]), (8, None))
+        self.assertNotIn("hand", a)                                         # 選之前不給牌面
         conn = __import__("db").connect(self.app.config["DB_PATH"])
-        for i in range(600):
+        stored = conn.execute("SELECT hand FROM draws WHERE user_id='dev:a'").fetchone()["hand"].split(",")
+        self.assertEqual(sorted(stored), sorted(["p88"] * 4 + ["gift"] * 3 + ["half"]))
+        for bad in (8, -1, "3", None, True):
+            self.assertEqual(self.post("a", "/api/draw", pick=bad).status_code, 400, bad)
+        r = self.post("a", "/api/draw", pick=5).get_json()["state"]["rewards"]
+        self.assertEqual((r["hand"], r["pick"], r["prize"]), (stored, 5, stored[5]))
+        again = self.post("a", "/api/draw", pick=0).get_json()["state"]["rewards"]   # 重選不會變
+        self.assertEqual((again["pick"], again["prize"]), (5, stored[5]))
+        cfg = json.dumps(self.c("a").get("/api/config").get_json())
+        self.assertNotIn("DECK", cfg)
+
+    def test_deck_distribution(self):
+        conn = __import__("db").connect(self.app.config["DB_PATH"])
+        for i in range(800):
             conn.execute("INSERT INTO users(id, name, code, created_at) VALUES(?,?,?,?)",
                          (f"s{i}", "", f"S{i:04d}", "x"))
-            rules.draw_prize(conn, f"s{i}", self.clock)
+            rules.deal(conn, f"s{i}", self.clock)
+            rules.pick_card(conn, f"s{i}", i % 8, self.clock)
         got = dict(conn.execute("SELECT prize, COUNT(*) FROM draws GROUP BY prize").fetchall())
-        self.assertTrue(300 < got["p88"] < 420 and 100 < got["half"] < 200 and 50 < got["gift"] < 140, got)
-
+        self.assertTrue(340 < got["p88"] < 460 and 240 < got["gift"] < 360 and 60 < got["half"] < 140, got)
 
     def test_absent_coupon_only_after_event_for_no_shows(self):
         self.join("came"); self.join("missed"); self.join("nofriend", friend=False)

@@ -198,21 +198,23 @@ function teamBlock() {
 function onsiteBlock() {
   const r = S.rewards;
   const head = '<div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠</h3></div>';
-  if (r.onsite === 'locked') return '';
+  if (r.onsite === 'locked' || !r.cards) return '';
   const p = r.prize ? CFG.prizes[r.prize] : null;
   if (!p) {
     if (r.onsite === 'ended') return '';
-    // 四張牌是同一次抽獎：結果由主機決定，選哪一張都一樣，所以翻開後不顯示其他三張
+    // 牌在這個畫面出現之前就由主機洗好存檔了，這裡只送出選的位置
     return `<section class="extra" id="draw">${head}
-      <p>選一張翻開，看你在攤位能用什麼優惠。每人抽一次。</p>
-      <div class="cards">${[1, 2, 3, 4].map(k => `<button class="cardback" data-act="draw" aria-label="第 ${k} 張">?</button>`).join('')}</div>${msg('draw')}
+      <p>${r.cards} 張牌選一張，翻開就是你在攤位能用的優惠。每人選一次，選完全部翻開給你看。</p>
+      <div class="cards">${Array.from({length: r.cards}, (_, k) => `<button class="cardback" data-act="draw" data-v="${k}" aria-label="第 ${k + 1} 張">?</button>`).join('')}</div>${msg('draw')}
       <p class="note">${esc(CFG.prize_base)}</p></section>`;
   }
   const how = r.onsite === 'ended' ? '博覽會已結束' : S.today.is_event_day ? '結帳時把這個畫面給工作人員看' : `12/17–12/19 在 ${esc(CFG.event.booth)} 攤位結帳時出示`;
+  const faces = r.hand.map((k, i) => `<div class="cardface ${i === r.pick ? 'mine' : ''} ${justDrew ? 'flip' : ''}" style="animation-delay:${i === r.pick ? 0 : 0.35 + i * 0.05}s">${esc(CFG.prizes[k].short).replace(/\n/g, '<br>')}${i === r.pick ? '<i>你選的</i>' : ''}</div>`).join('');
   return `<section class="extra" id="draw">${head}
-      <div class="coupon ${r.onsite === 'ended' ? 'used' : ''} ${justDrew ? 'flip' : ''}">${esc(p.title)}<small>${how}</small></div>
+      <div class="coupon ${r.onsite === 'ended' ? 'used' : ''}">${esc(p.title)}<small>${how}</small></div>
       <p class="muted">${esc(p.detail)}</p>
-      <p class="note">${esc(CFG.prize_base)}${r.onsite_uses ? ` 已使用 ${r.onsite_uses} 次，謝謝你的支持。` : ''}</p></section>`;
+      <div class="cards" role="img" aria-label="這副牌的 ${r.cards} 張全部翻開，你選的是第 ${r.pick + 1} 張">${faces}</div>
+      <p class="note">這是你那副牌的全部內容。${esc(CFG.prize_base)}${r.onsite_uses ? ` 已使用 ${r.onsite_uses} 次，謝謝你的支持。` : ''}</p></section>`;
 }
 
 function render() {
@@ -318,7 +320,7 @@ function bind() {
         return first ? r : {state: r.state, note: `已改成${DIST[v]}，時間表也換好了。`};
       }).then(() => { if (first) app.scrollIntoView({block: 'start'}); });
     }
-    if (a === 'draw') { justDrew = true; return act('draw', () => api('/api/draw', {})).then(() => { justDrew = false; }); }
+    if (a === 'draw') { justDrew = true; return act('draw', () => api('/api/draw', {pick: Number(v)})).then(() => { justDrew = false; }); }
     if (a === 'quiz') return act('quiz', () => api('/api/quiz', {q: Number(el.dataset.q), answer: v === '1'}));
     if (a === 'invite') return act('invite', invite);
     if (a === 'ref') return act('ref', () => api('/api/ref', {code: document.getElementById('refcode').value}));

@@ -34,11 +34,14 @@ CREATE TABLE IF NOT EXISTS questions (
     at      TEXT NOT NULL
 );
 
--- 現場優惠抽獎：每人抽一次，結果由主機決定並存在這裡
+-- 現場優惠抽獎：主機先洗好一副牌存起來（hand），客人再選位置（pick）。每人一次。
 CREATE TABLE IF NOT EXISTS draws (
-    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    prize   TEXT NOT NULL,
-    at      TEXT NOT NULL
+    user_id  TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    hand     TEXT NOT NULL,              -- 逗號分隔的獎項代號，順序就是牌的位置
+    dealt_at TEXT NOT NULL,
+    pick     INTEGER,                    -- 客人選的位置（0 起算），還沒選是 NULL
+    prize    TEXT,
+    at       TEXT
 );
 
 -- 現場優惠券的使用紀錄：不限次數，只記錄

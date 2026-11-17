@@ -101,7 +101,11 @@ def create_app(test_config=None):
             conn.close()
 
     def me_state():
-        return rules.state(db(), session["uid"], now(), app.config, content.QUIZ)
+        uid, n = session["uid"], now()
+        # 有資格抽現場優惠的人，在回傳畫面資料之前先把牌洗好存檔
+        if rules.onsite_status(rules.get_user(db(), uid), n) == "ready":
+            rules.deal(db(), uid, n)
+        return rules.state(db(), uid, n, app.config, content.QUIZ)
 
     def need_user(fn):
         @wraps(fn)
@@ -416,15 +420,13 @@ def create_app(test_config=None):
     @need_user
     @need_consent
     def draw():
-        """抽現場優惠。結果在主機決定並存檔，每人一次。"""
+        """選一張牌。牌在他看到牌背之前就洗好存檔了，這裡只記錄他選的位置。每人一次。"""
         n, uid = now(), session["uid"]
-        u = rules.get_user(db(), uid)
-        status = rules.onsite_status(u, n)
-        if status == "locked":
+        me_state()                                   # 確保牌已經發好
+        if not rules.get_draw(db(), uid):
             return err("先加好友、選好距離，才能抽現場優惠")
-        if status == "ended" and not rules.prize_of(db(), uid):
-            return err("博覽會已經結束")
-        rules.draw_prize(db(), uid, n)
+        if rules.pick_card(db(), uid, body().get("pick"), n) is None:
+            return err("請選一張牌")
         return jsonify({"ok": True, "state": me_state()})
 
     @app.post("/api/ask")
@@ -567,7 +569,8 @@ def create_app(test_config=None):
             "arrived": one("SELECT COUNT(*) FROM users WHERE arrived_at IS NOT NULL"),
             "quiz_done": one("SELECT COUNT(*) FROM (SELECT user_id FROM quiz GROUP BY user_id "
                              "HAVING COUNT(*) >= ?)", min(rules.QUIZ_SIZE, len(content.QUIZ))),
-            "draws": rows("SELECT prize, COUNT(*) n FROM draws GROUP BY prize ORDER BY n DESC"),
+            "draws": rows("SELECT prize, COUNT(*) n FROM draws WHERE prize IS NOT NULL "
+                         "GROUP BY prize ORDER BY n DESC"),
             "onsite_uses": one("SELECT COUNT(*) FROM onsite_uses"),
             "onsite_buyers": one("SELECT COUNT(DISTINCT user_id) FROM onsite_uses"),
             "onsite_by_day": rows("SELECT day, COUNT(*) n, COUNT(DISTINCT user_id) buyers "

@@ -28,7 +28,7 @@ cfg = {
 MOCK = """
 const DEMO = {cfg: %s, pool: %s};
 const D = {consent: false, distance: null, ans: {}, asked: false, sent: false, partner: false,
-           partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, prize: null, eventDay: false, over: false,
+           partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, prize: null, pick: null, hand: null, eventDay: false, over: false,
            ids: [...DEMO.pool.keys()].sort(() => Math.random() - .5).slice(0, 3)};
 function demoState() {
   const quizDone = D.ids.every(i => i in D.ans), qualified = D.partner && D.partnerNew;
@@ -44,7 +44,7 @@ function demoState() {
       gummy: D.got.gummy ? 'claimed' : !D.distance ? 'locked' : stock,
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
-      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, prize: D.prize,
+      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, cards: D.hand ? D.hand.length : 0, prize: D.prize, ...(D.prize ? {pick: D.pick, hand: D.hand} : {}),
       absent: absent, absent_code: absent ? 'EV-DEMO-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
@@ -52,10 +52,14 @@ async function api(path, data) {
   const fail = m => { const e = new Error(m); e.status = 400; throw e; };
   if (path === '/api/config') return DEMO.cfg;
   if (path === '/api/consent') D.consent = true;
-  if (path === '/api/distance') D.distance = data.distance;
+  if (path === '/api/distance') {
+    D.distance = data.distance;
+    // 跟正式版一樣：看到牌背之前先把牌洗好
+    if (!D.hand) D.hand = %s.map(v => [Math.random(), v]).sort((a, b) => a[0] - b[0]).map(v => v[1]);
+  }
   if (path === '/api/quiz' && !(data.q in D.ans)) D.ans[data.q] = data.answer;
-  // 示範版沒有主機，只好在這裡抽；正式版的結果由主機決定，網頁裡沒有機率
-  if (path === '/api/draw' && !D.prize) { const x = Math.random() * 100; D.prize = x < 60 ? 'p88' : x < 85 ? 'half' : 'gift'; }
+  // 示範版沒有主機，牌只好洗在網頁裡；正式版的牌存在主機，選之前網頁拿不到
+  if (path === '/api/draw' && !D.prize && D.hand) { D.pick = data.pick; D.prize = D.hand[data.pick]; }
   if (path === '/api/ask') { if (!String(data.text || '').trim()) fail('請先寫下你的問題'); D.asked = true; }
   if (path === '/api/ref') fail('示範版沒有其他參加者');
   return {ok: true, state: demoState()};
@@ -91,7 +95,8 @@ function demoDo(a) {
   if (a === 'over') { D.eventDay = false; D.over = true; }
   S = demoState(); flash = {}; render();
 }
-""" % (json.dumps(cfg, ensure_ascii=False), json.dumps(content.QUIZ, ensure_ascii=False))
+""" % (json.dumps(cfg, ensure_ascii=False), json.dumps(content.QUIZ, ensure_ascii=False),
+       json.dumps([k for k, c in rules.DECK for _ in range(c)]))
 
 js = read("static/app.js")
 js, n = re.subn(r"async function api\(path, data, method\) \{.*?\n\}\n", lambda m: MOCK, js, count=1, flags=re.S)
