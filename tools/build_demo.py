@@ -1,6 +1,9 @@
-"""把任務卡頁打包成單一 HTML 的示範版（不需要後端，資料只存在記憶體）。
+"""把兌換券頁打包成單一 HTML 的試用版（不需要後端，資料只存在記憶體）。
 用法：python tools/build_demo.py 輸出路徑
-給內部看畫面與流程用，不是正式站。"""
+給內部看畫面與流程用，不是正式站。
+
+畫面上不出現「示範」「草稿」這類字眼，讓試用的人看到的跟正式版一樣。
+網址加上 ?test 才會出現模擬按鈕（模擬朋友、博覽會當天、攤位報到等）與草稿標示。"""
 import base64
 import json
 import os
@@ -16,7 +19,7 @@ read = lambda p: open(os.path.join(ROOT, p), encoding="utf-8").read()
 logo = base64.b64encode(open(os.path.join(ROOT, "static/logo_black.png"), "rb").read()).decode()
 
 cfg = {
-    "liff_id": "", "dev": True, "demo": True, "oa_id": "@201nygdf", "identity": "demo",
+    "liff_id": "", "dev": False, "demo": True, "oa_id": "@201nygdf", "identity": "oa",
     "friend_check": "oa", "keyword": "任務卡", "has_pending_ref": False,
     "event": content.EVENT, "plans": content.PLANS, "quiz_after": content.QUIZ_AFTER,
     "prizes": content.PRIZES, "prize_base": content.PRIZE_BASE,
@@ -26,7 +29,10 @@ cfg = {
 }
 
 MOCK = """
+const TOOLS = new URLSearchParams(location.search).has('test');
 const DEMO = {cfg: %s, pool: %s};
+if (!TOOLS) DEMO.cfg.reviewed = true;      // 試用畫面不顯示草稿標示
+let JOINED = false;
 const D = {consent: false, distance: null, ans: {}, asked: false, sent: false, partner: false,
            partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, prize: null, pick: null, hand: null, eventDay: false, over: false,
            ids: [...DEMO.pool.keys()].sort(() => Math.random() - .5).slice(0, 3)};
@@ -34,7 +40,7 @@ function demoState() {
   const quizDone = D.ids.every(i => i in D.ans), qualified = D.partner && D.partnerNew;
   const stock = D.over ? 'ended' : 'ready';
   const absent = D.over && !!D.distance && !D.arrived;
-  return {name: '示範', code: 'PUL5R', is_friend: true, is_new: true, consent: D.consent,
+  return {name: '', code: 'PUL5R', is_friend: true, is_new: true, consent: D.consent,
     distance: D.distance, plan_sent: !!D.distance, arrived: D.arrived, asked: D.asked, quiz_done: quizDone,
     quiz: D.ids.map(i => i in D.ans
       ? {id: i, text: DEMO.pool[i].text, answered: true, correct: D.ans[i] === DEMO.pool[i].answer, truth: DEMO.pool[i].answer, explain: DEMO.pool[i].explain}
@@ -45,12 +51,13 @@ function demoState() {
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
       onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, cards: D.hand ? D.hand.length : 0, prize: D.prize, ...(D.prize ? {pick: D.pick, hand: D.hand} : {}),
-      absent: absent, absent_code: absent ? 'EV-DEMO-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
+      absent: absent, absent_code: absent ? 'EV-TPEMARA-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
 async function api(path, data) {
   const fail = m => { const e = new Error(m); e.status = 400; throw e; };
   if (path === '/api/config') return DEMO.cfg;
+  if (!JOINED) { const e = new Error('尚未加入'); e.status = 401; throw e; }
   if (path === '/api/consent') D.consent = true;
   if (path === '/api/distance') {
     D.distance = data.distance;
@@ -58,17 +65,17 @@ async function api(path, data) {
     if (!D.hand) D.hand = %s.map(v => [Math.random(), v]).sort((a, b) => a[0] - b[0]).map(v => v[1]);
   }
   if (path === '/api/quiz' && !(data.q in D.ans)) D.ans[data.q] = data.answer;
-  // 示範版沒有主機，牌只好洗在網頁裡；正式版的牌存在主機，選之前網頁拿不到
+  // 這一版沒有主機，牌只好洗在網頁裡；正式版的牌存在主機，選之前網頁拿不到
   if (path === '/api/draw' && !D.prize && D.hand) { D.pick = data.pick; D.prize = D.hand[data.pick]; }
   if (path === '/api/ask') { if (!String(data.text || '').trim()) fail('請先寫下你的問題'); D.asked = true; }
-  if (path === '/api/ref') fail('示範版沒有其他參加者');
+  if (path === '/api/ref') fail('代碼不對，請再向朋友確認一次');
   return {ok: true, state: demoState()};
 }
 function demoDo(a) {
   const tip = document.getElementById('demoTip');
   tip.textContent = '';
   if (a === 'reset') { location.reload(); return; }
-  if (a === 'landing') { landing(); return; }
+  if (a === 'landing') { JOINED = false; landing(); return; }
   if (!S || !S.distance) { tip.textContent = '先在下面的兌換券按「同意並開始」、選距離。'; return; }
   if (a === 'friend' || a === 'oldfriend') {
     if (!D.sent) { tip.textContent = '先在「加碼二」按「傳邀請給跑友」，再按這個按鈕。'; return; }
@@ -95,6 +102,15 @@ function demoDo(a) {
   if (a === 'over') { D.eventDay = false; D.over = true; }
   S = demoState(); flash = {}; render();
 }
+// 試用版沒有真的 LINE：按「加入好友」就當作已加入，直接進到兌換券
+document.addEventListener('click', e => {
+  const a = e.target.closest('a.btn.primary');
+  if (!a || JOINED) return;
+  e.preventDefault();
+  JOINED = true;
+  openSession().then(ok => { if (ok) render(); });
+});
+if (TOOLS) document.getElementById('demoBar').hidden = false;
 """ % (json.dumps(cfg, ensure_ascii=False), json.dumps(content.QUIZ, ensure_ascii=False),
        json.dumps([k for k, c in rules.DECK for _ in range(c)]))
 
@@ -114,8 +130,8 @@ html = html.replace('<link rel="stylesheet" href="/static/card.css">',
 </style>""")
 html = html.replace('src="/static/logo_black.png"', f'src="data:image/png;base64,{logo}"')
 html = html.replace('<div class="wrap">', """<div class="wrap">
-  <div class="demo"><b>示範版：資料不會儲存，重新整理就歸零</b>
-    先照著下面的兌換券自己做。這些按鈕只用來模擬「別人」和「時間」。
+  <div class="demo" id="demoBar" hidden><b>測試工具（網址有 ?test 才會出現）</b>
+    資料不會儲存，重新整理就歸零。先照著下面的券自己做，這些按鈕用來模擬「別人」和「時間」。
     <div><button onclick="demoDo('landing')">看加好友引導頁</button>
     <button onclick="demoDo('friend')">新朋友接受邀請</button>
     <button onclick="demoDo('oldfriend')">舊好友接受邀請</button>
@@ -127,6 +143,5 @@ html = html.replace('<div class="wrap">', """<div class="wrap">
     <button onclick="demoDo('reset')">重來</button></div>
     <p id="demoTip" style="color:#ffb199;margin-top:8px"></p></div>""", 1)
 html = html.replace('<script src="/static/app.js"></script>', "<script>\n" + js + "\n</script>")
-html = html.replace("<title>", "<title>示範｜", 1)
 open(sys.argv[1], "w", encoding="utf-8").write(html)
 print("ok", len(html))
