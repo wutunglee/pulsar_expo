@@ -29,15 +29,38 @@ function loadScript(src) {
   });
 }
 
+const addFriendUrl = () => 'https://line.me/R/ti/p/' + encodeURIComponent(CFG.oa_id);
+
+// 官方帳號模式下還沒有身分的人：請他加好友，任務卡連結會由官方帳號傳給他
+function landing() {
+  const invited = params.get('ref') || CFG.has_pending_ref;
+  app.innerHTML = `<section class="panel alert">
+      <h3>${invited ? '朋友邀你一起跑補給站' : '加入好友，領你的任務卡'}</h3>
+      <p>加入 PulsarPump 的 LINE 好友，我們會馬上把你專屬的任務卡傳到聊天室，點開就能開始。${invited ? '你和朋友會自動算成一隊。' : ''}</p>
+      <a class="btn primary" href="${addFriendUrl()}">加入 PulsarPump 好友</a>
+      <p class="note">已經是好友？在 PulsarPump 的聊天室輸入「${esc(CFG.keyword)}」，就會收到你的任務卡。</p>
+    </section>`;
+}
+
 async function openSession() {
   const payload = {ref: params.get('ref') || ''};
+  const useDev = CFG.dev && (params.get('dev_user') || CFG.identity !== 'oa');
+  if (CFG.identity === 'oa' && !useDev) {
+    try {
+      S = (await api('/api/me')).state;
+      return true;
+    } catch (e) {
+      if (e.status === 401) { landing(); return false; }
+      throw e;
+    }
+  }
   if (CFG.liff_id) {
     if (!window.liff) await loadScript('https://static.line-scdn.net/liff/edge/2/sdk.js');
     await liff.init({liffId: CFG.liff_id});
     if (!liff.isLoggedIn()) { liff.login({redirectUri: location.href}); return false; }
     payload.id_token = liff.getIDToken();
     payload.access_token = liff.getAccessToken();
-  } else if (CFG.dev) {
+  } else if (useDev) {
     payload.dev_user = params.get('dev_user') || 'tester';
     payload.dev_friend = params.get('friend') !== '0';
   } else {
@@ -94,6 +117,11 @@ const inviteUrl = () => CFG.liff_id
 
 async function invite() {
   const text = CFG.invite_text + inviteUrl();
+  if (!window.liff && /Android|iPhone|iPad|Line\//i.test(navigator.userAgent)) {
+    // 不在 LIFF 裡時，用 LINE 的分享連結開啟選擇聊天室的畫面
+    location.href = 'https://line.me/R/share?text=' + encodeURIComponent(text);
+    return {note: '朋友加入好友並完成第 1 站後，這一站就會完成。'};
+  }
   if (window.liff && liff.isApiAvailable && liff.isApiAvailable('shareTargetPicker')) {
     try {
       const res = await liff.shareTargetPicker([{type: 'text', text}]);
@@ -167,10 +195,12 @@ function render() {
   }
   const draft = CFG.reviewed ? '' : '<p class="note">內容為草稿，待黎醫師確認。</p>';
   const friend = S.is_friend ? '' : `<section class="panel alert">
-      <h3>先加入 LINE 好友</h3>
-      <p class="muted">進度已經幫你記錄。加入好友後才能領獎勵，博覽會前一天也會提醒你。</p>
-      <a class="btn primary" href="https://line.me/R/ti/p/${encodeURIComponent(CFG.oa_id)}" target="_blank" rel="noopener">加入 PulsarPump 好友</a>
-      <button data-act="refresh">我加好了，重新整理</button>${msg('refresh')}
+      <h3>${CFG.friend_check === 'staff' ? '領獎前，請攤位人員確認好友' : '先加入 LINE 好友'}</h3>
+      <p class="muted">${CFG.friend_check === 'staff'
+        ? '進度已經幫你記錄。加入好友後，到攤位把 LINE 畫面給工作人員看一下，就能領獎勵。'
+        : '進度已經幫你記錄。加入好友後才能領獎勵，博覽會前一天也會提醒你。'}</p>
+      <a class="btn primary" href="${addFriendUrl()}" target="_blank" rel="noopener">加入 PulsarPump 好友</a>
+      <button data-act="refresh">${CFG.friend_check === 'staff' ? '重新整理' : '我加好了，重新整理'}</button>${msg('refresh')}
     </section>`;
 
   const plan = S.distance ? '<table>' + CFG.plans[S.distance].map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join('') + '</table>' : '';
@@ -185,7 +215,10 @@ function render() {
   const s3 = `<p class="muted">${S.stations['3'] ? '你們已經是一隊。兩個人都到攤位完成第 4 站，各送勁速補 1 包。'
       : S.has_partner ? '朋友已經點開邀請。等他加入好友並完成第 1 站，這一站就會完成。'
       : '把任務卡傳給一位要去博覽會的朋友。他加入好友並完成第 1 站，你們就算一隊。'}</p>
-    <button class="${S.stations['3'] ? '' : 'primary'}" data-act="invite">${S.stations['3'] ? '再邀請一位' : '傳邀請給跑友'}</button>${msg('invite')}`;
+    <button class="${S.stations['3'] ? '' : 'primary'}" data-act="invite">${S.stations['3'] ? '再邀請一位' : '傳邀請給跑友'}</button>${msg('invite')}
+    <p class="note">你的邀請碼：<b>${esc(S.code)}</b></p>
+    ${S.stations['3'] || S.invited ? '' : `<div class="codebox"><input id="refcode" placeholder="朋友的邀請碼" maxlength="5" autocomplete="off" autocapitalize="characters" aria-label="朋友的邀請碼">
+      <button data-act="ref">加入他的隊</button></div>${msg('ref')}`}`;
 
   const s4 = S.stations['4'] ? '<p class="muted">謝謝你來攤位。</p>'
     : `<p class="muted">出示這張任務卡，試喝後工作人員會給你當日通關碼。三天都可以來。</p>
@@ -224,7 +257,10 @@ function bind() {
     if (a === 'consent') return act('consent', () => api('/api/consent', {}));
     if (a === 'refresh') return act('refresh', async () => {
       await openSession();
-      return S.is_friend ? {} : {note: '還沒偵測到好友狀態，加入後再按一次。', bad: true};
+      if (S.is_friend) return {};
+      return {note: CFG.friend_check === 'staff' ? '還沒確認。到攤位請工作人員幫你確認。'
+        : CFG.friend_check === 'oa' ? `還沒偵測到。加入後在聊天室輸入「${CFG.keyword}」再試一次。`
+        : '還沒偵測到好友狀態，加入後再按一次。', bad: true};
     });
     if (a === 'dist') return act('dist', () => api('/api/station/1', {distance: v}));
     if (a === 'myth') return act('myth', async () => {
@@ -232,6 +268,7 @@ function bind() {
       return {state: r.state, note: (r.correct ? '答對了。' : '其實是假的。') + r.explain};
     });
     if (a === 'invite') return act('invite', invite);
+    if (a === 'ref') return act('ref', () => api('/api/ref', {code: document.getElementById('refcode').value}));
     if (a === 'code') return act('code', () => api('/api/station/4', {code: document.getElementById('code4').value}));
     if (a === 'ask') return act('ask', () => api('/api/station/5', {text: document.getElementById('q').value}));
     if (a === 'fallback') return act('fallback', () => api('/api/reward/fallback', {}));

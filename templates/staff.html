@@ -39,7 +39,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let PIN = '';
+let PIN = '', FRIEND_CHECK = '';
 try { PIN = sessionStorage.getItem('pin') || ''; } catch (e) {}
 
 async function call(path, data) {
@@ -54,6 +54,7 @@ function say(text, ok) { const m = $('msg'); m.hidden = !text; m.textContent = t
 async function today() {
   const r = await call('/api/staff/today');
   if (!r.ok) return false;
+  FRIEND_CHECK = r.friend_check;
   $('day').textContent = r.day + (r.is_event_day ? '' : '（非展期，不能發放）');
   $('gLeft').textContent = r.gummy.left; $('gCap').textContent = '共 ' + r.gummy.cap + ' 份';
   $('cLeft').textContent = r.crampeace.left; $('cCap').textContent = '共 ' + r.crampeace.cap + ' 份';
@@ -72,13 +73,24 @@ function show(u) {
   $('user').hidden = false;
   $('user').innerHTML = `
     <div class="progress-top"><h3>${esc(u.name) || '（未提供名稱）'}</h3><b>${esc(u.code)}</b></div>
-    <p class="${u.is_friend ? 'muted' : 'msg bad'}">${u.is_friend ? '已加好友' : '尚未加好友，請他先加入並在任務卡按「重新整理」'}</p>
+    <p class="${u.is_friend ? 'muted' : 'msg bad'}">${u.is_friend ? '已加好友' : FRIEND_CHECK === 'staff'
+      ? '尚未確認好友。請看他手機上 PulsarPump 的 LINE 聊天室，確認已加入後按下方按鈕。'
+      : FRIEND_CHECK === 'oa' ? '尚未加好友（或已封鎖）。請他加入後，在聊天室輸入「任務卡」。'
+      : '尚未加好友，請他先加入並在任務卡按「重新整理」'}</p>
+    ${!u.is_friend && FRIEND_CHECK === 'staff' ? '<button class="primary" id="okFriend">已看過，確認是好友</button>' : ''}
     <div class="tags">${st}<span class="muted">已完成 ${u.count} 站</span></div>
     ${row('gummy', '軟糖 2 條')}${row('crampeace', '勁速補 1 包')}
     <div class="row2">
       <button data-mark="4" ${u.stations[4] ? 'disabled' : ''}>代完成第 4 站（試喝）</button>
       <button data-mark="5" ${u.stations[5] ? 'disabled' : ''}>代完成第 5 站（已當面提問）</button>
     </div>`;
+  const fb = $('okFriend');
+  if (fb) fb.onclick = async () => {
+    fb.disabled = true;
+    const r = await call('/api/staff/friend', {code: u.code});
+    say(r.ok ? '已確認好友。' : (r.error || '操作失敗'), r.ok);
+    if (r.user) show(r.user);
+  };
   $('user').querySelectorAll('[data-claim]').forEach(b => b.onclick = async () => {
     b.disabled = true;
     const r = await call('/api/staff/claim', {code: u.code, reward: b.dataset.claim});

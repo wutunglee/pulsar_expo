@@ -173,6 +173,7 @@ def state(db, uid, n, cfg):
         "stations": {str(s): (s in done) for s in STATIONS},
         "count": len(done),
         "has_partner": bool(partners(db, uid)),
+        "invited": bool(u["invited_by"]),
         "rewards": {
             "gummy": gummy_status(db, u, done, claims, n),
             "crampeace": crampeace_status(db, u, done, claims, n),

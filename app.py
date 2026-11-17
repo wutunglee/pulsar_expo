@@ -8,7 +8,9 @@ import time
 from datetime import timedelta
 from functools import wraps
 
-from flask import Flask, Response, g, jsonify, render_template, request, session
+from flask import (Flask, Response, g, jsonify, redirect, render_template, request,
+                   session)
+from itsdangerous import BadSignature, URLSafeSerializer
 
 import content
 import db as dbm
@@ -55,6 +57,14 @@ def create_app(test_config=None):
         LIFF_ID=env("LIFF_ID", ""),
         LINE_LOGIN_CHANNEL_ID=env("LINE_LOGIN_CHANNEL_ID", ""),
         LINE_OA_ID=env("LINE_OA_ID", ""),
+        # 認人方式：oa＝官方帳號 webhook 發專屬連結；liff＝LINE Login／LIFF
+        IDENTITY=env("IDENTITY", "oa"),
+        # 好友確認：oa＝webhook 的加入／封鎖通知；line＝LIFF 開卡時向 LINE 查；staff＝攤位人員確認
+        FRIEND_CHECK=env("FRIEND_CHECK", ""),
+        LINE_CHANNEL_ID=env("LINE_CHANNEL_ID", ""),
+        LINE_CHANNEL_SECRET=env("LINE_CHANNEL_SECRET", ""),
+        LINE_KEYWORD=env("LINE_KEYWORD", "任務卡"),
+        PUBLIC_URL=env("PUBLIC_URL", "").rstrip("/"),
         STAFF_PIN=env("STAFF_PIN", ""),
         ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
         DAY_CODES=parse_codes(env("DAY_CODES", "")),
@@ -68,10 +78,19 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
     app.config["SESSION_COOKIE_SECURE"] = not app.config["DEV_MODE"]
+    if app.config["IDENTITY"] not in ("oa", "liff"):
+        raise RuntimeError("IDENTITY 只能是 oa 或 liff")
+    if not app.config["FRIEND_CHECK"]:
+        app.config["FRIEND_CHECK"] = "line" if app.config["IDENTITY"] == "liff" else "oa"
+    if app.config["FRIEND_CHECK"] not in ("oa", "line", "staff"):
+        raise RuntimeError("FRIEND_CHECK 只能是 oa、line 或 staff")
+    if app.config["FRIEND_CHECK"] == "line" and app.config["IDENTITY"] != "liff":
+        raise RuntimeError("FRIEND_CHECK=line 需要 IDENTITY=liff")
     if not app.config["DEV_MODE"] and app.config["SECRET_KEY"] == DEFAULT_SECRET:
         raise RuntimeError("正式環境必須在 .env 設定 SECRET_KEY")
 
     dbm.init(app.config["DB_PATH"])
+    card_signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="card-link")
     pin_fails = {}  # ip -> (次數, 解鎖時間)
 
     def now():
@@ -153,11 +172,67 @@ def create_app(test_config=None):
     def body():
         return request.get_json(silent=True) or {}
 
+    def upsert_user(uid, name, friend=None):
+        """建立或更新參加者。friend=None 表示這次不動好友狀態。"""
+        conn = db()
+        if rules.get_user(conn, uid):
+            if name:
+                conn.execute("UPDATE users SET name=? WHERE id=?", (name[:60], uid))
+            if friend is not None:
+                conn.execute("UPDATE users SET is_friend=? WHERE id=?", (int(friend), uid))
+        else:
+            conn.execute(
+                "INSERT INTO users(id, name, code, is_friend, created_at) VALUES(?,?,?,?,?)",
+                (uid, name[:60], new_code(), int(bool(friend)), rules.iso(now())))
+
+    def set_inviter(uid, code):
+        """回傳是否成功設定邀請人。"""
+        code = str(code or "").strip().upper()
+        if not code:
+            return False
+        conn = db()
+        inv = conn.execute("SELECT id FROM users WHERE code=?", (code,)).fetchone()
+        if not inv or not rules.can_set_inviter(conn, uid, inv["id"]):
+            return False
+        conn.execute("UPDATE users SET invited_by=? WHERE id=?", (inv["id"], uid))
+        return True
+
+    def login(uid):
+        session.clear()
+        session.permanent = True
+        session["uid"] = uid
+
+    def card_link(uid):
+        base = app.config["PUBLIC_URL"] or request.url_root.rstrip("/")
+        return f"{base}/t/{card_signer.dumps(uid)}"
+
     # ---------- 頁面 ----------
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        resp = Response(render_template("index.html"))
+        ref = request.args.get("ref", "").strip().upper()
+        if ref.isalnum() and len(ref) == 5:
+            # 朋友點邀請連結時還沒有身分，先記住邀請碼，等他拿到專屬連結再套用
+            resp.set_cookie("pending_ref", ref, max_age=30 * 86400, httponly=True,
+                            samesite="Lax", secure=app.config["SESSION_COOKIE_SECURE"])
+        return resp
+
+    @app.get("/t/<token>")
+    def open_card(token):
+        """官方帳號傳給每個人的專屬連結：點開就是他的任務卡。"""
+        try:
+            uid = card_signer.loads(token)
+        except BadSignature:
+            return redirect("/")
+        if not rules.get_user(db(), uid):
+            return redirect("/")
+        login(uid)
+        resp = redirect("/")
+        if set_inviter(uid, request.cookies.get("pending_ref")):
+            rules.settle_team(db(), uid, now())
+        resp.delete_cookie("pending_ref")
+        return resp
 
     @app.get("/staff")
     def staff_page():
@@ -181,7 +256,11 @@ def create_app(test_config=None):
     def api_config():
         c = app.config
         return jsonify({
-            "liff_id": c["LIFF_ID"], "dev": c["DEV_MODE"], "oa_id": c["LINE_OA_ID"],
+            "liff_id": c["LIFF_ID"] if c["IDENTITY"] == "liff" else "",
+            "dev": c["DEV_MODE"], "oa_id": c["LINE_OA_ID"],
+            "identity": c["IDENTITY"], "friend_check": c["FRIEND_CHECK"],
+            "keyword": c["LINE_KEYWORD"],
+            "has_pending_ref": bool(request.cookies.get("pending_ref")),
             "event": content.EVENT, "plans": content.PLANS,
             "myth": {"question": content.MYTH["question"]},
             "invite_text": content.INVITE_TEXT, "privacy": content.PRIVACY,
@@ -197,33 +276,89 @@ def create_app(test_config=None):
         if c["DEV_MODE"] and b.get("dev_user"):
             uid = "dev:" + str(b["dev_user"])[:30]
             name, friend = str(b["dev_user"])[:30], bool(b.get("dev_friend"))
+        elif c["IDENTITY"] != "liff":
+            return err("請從 LINE 官方帳號傳給你的連結開啟任務卡", 401)
         else:
             if not c["LINE_LOGIN_CHANNEL_ID"]:
                 return err("尚未設定 LINE 頻道", 503)
             try:
                 uid, name = line_api.verify_id_token(b.get("id_token", ""),
                                                      c["LINE_LOGIN_CHANNEL_ID"])
-                friend = line_api.is_friend(b.get("access_token", ""))
+                friend = (line_api.is_friend(b.get("access_token", ""))
+                          if c["FRIEND_CHECK"] == "line" else None)
             except line_api.LineError as e:
                 return err(f"LINE 登入失敗：{e}", 401)
-        conn = db()
-        if rules.get_user(conn, uid):
-            conn.execute("UPDATE users SET name=?, is_friend=? WHERE id=?",
-                         (name[:60], int(friend), uid))
-        else:
-            conn.execute(
-                "INSERT INTO users(id, name, code, is_friend, created_at) VALUES(?,?,?,?,?)",
-                (uid, name[:60], new_code(), int(friend), rules.iso(n)))
-        ref = str(b.get("ref") or "").strip().upper()
-        if ref:
-            inv = conn.execute("SELECT id FROM users WHERE code=?", (ref,)).fetchone()
-            if inv and rules.can_set_inviter(conn, uid, inv["id"]):
-                conn.execute("UPDATE users SET invited_by=? WHERE id=?", (inv["id"], uid))
-        rules.settle_team(conn, uid, n)
-        session.clear()
-        session.permanent = True
-        session["uid"] = uid
+        upsert_user(uid, name, friend)
+        set_inviter(uid, b.get("ref"))
+        rules.settle_team(db(), uid, n)
+        login(uid)
         return jsonify({"ok": True, "state": me_state()})
+
+    @app.post("/api/ref")
+    @need_user
+    def api_ref():
+        """手動輸入朋友的邀請碼（點連結時沒帶到邀請碼的補救）。"""
+        uid = session["uid"]
+        if rules.get_user(db(), uid)["invited_by"]:
+            return err("你已經有隊友了")
+        if not set_inviter(uid, body().get("code")):
+            return err("邀請碼不對，請再向朋友確認一次")
+        rules.settle_team(db(), uid, now())
+        return jsonify({"ok": True, "state": me_state()})
+
+    # ---------- LINE 官方帳號 webhook ----------
+
+    @app.post("/line/webhook")
+    def line_webhook():
+        c = app.config
+        if not c["LINE_CHANNEL_SECRET"]:
+            return err("尚未設定 LINE_CHANNEL_SECRET", 503)
+        raw = request.get_data()
+        if not line_api.verify_signature(raw, request.headers.get("X-Line-Signature", ""),
+                                         c["LINE_CHANNEL_SECRET"]):
+            return err("簽章不正確", 401)
+        try:
+            events = (request.get_json(silent=True) or {}).get("events") or []
+        except AttributeError:
+            events = []
+        for ev in events:
+            try:
+                handle_event(ev)
+            except Exception:  # 單一事件失敗不影響其他事件，也不讓 LINE 重送整批
+                app.logger.exception("webhook 事件處理失敗")
+        return jsonify({"ok": True})
+
+    def handle_event(ev):
+        c, n = app.config, now()
+        src = ev.get("source") or {}
+        uid = src.get("userId")
+        if src.get("type") != "user" or not uid:
+            return
+        kind = ev.get("type")
+        if kind == "unfollow":
+            db().execute("UPDATE users SET is_friend=0 WHERE id=?", (uid,))
+            return
+        if kind == "message":
+            m = ev.get("message") or {}
+            if m.get("type") != "text" or (m.get("text") or "").strip() != c["LINE_KEYWORD"]:
+                return  # 其他訊息一律不回，留給真人客服
+        elif kind != "follow":
+            return
+        token = ""
+        try:
+            token = line_api.channel_token(c["LINE_CHANNEL_ID"], c["LINE_CHANNEL_SECRET"])
+        except line_api.LineError:
+            app.logger.warning("拿不到 channel access token，這次無法回覆")
+        is_new = not rules.get_user(db(), uid)
+        name = line_api.get_profile(token, uid) if token and is_new else ""
+        upsert_user(uid, name, True)
+        rules.settle_team(db(), uid, n)
+        if token and ev.get("replyToken"):
+            try:
+                line_api.reply(token, ev["replyToken"],
+                               content.CARD_MESSAGE.format(link=card_link(uid)))
+            except line_api.LineError:
+                app.logger.warning("回覆任務卡連結失敗")
 
     @app.get("/api/me")
     @need_user
@@ -362,6 +497,19 @@ def create_app(test_config=None):
         rules.complete(db(), u["id"], b["station"], n, "staff")
         return jsonify({"ok": True, "user": staff_view(u)})
 
+    @app.post("/api/staff/friend")
+    @need_staff
+    def staff_friend():
+        """FRIEND_CHECK=staff 時，人員看過對方手機上的好友畫面後按下確認。"""
+        if app.config["FRIEND_CHECK"] != "staff":
+            return err("目前的設定不是由攤位人員確認好友")
+        u = by_code(body().get("code"))
+        if not u:
+            return err("找不到這個代碼", 404)
+        db().execute("UPDATE users SET is_friend=1 WHERE id=?", (u["id"],))
+        rules.settle_team(db(), u["id"], now())
+        return jsonify({"ok": True, "user": staff_view(by_code(u["code"]))})
+
     @app.post("/api/staff/claim")
     @need_staff
     def staff_claim():
@@ -394,7 +542,8 @@ def create_app(test_config=None):
     @need_staff
     def staff_today():
         n, d = now(), rules.event_day(now())
-        out = {"day": rules.day_key(n), "is_event_day": bool(d)}
+        out = {"day": rules.day_key(n), "is_event_day": bool(d),
+               "friend_check": app.config["FRIEND_CHECK"]}
         for r in ("gummy", "crampeace"):
             out[r] = {"cap": d[r] if d else 0, "left": rules.left_today(db(), r, n)}
         return jsonify({"ok": True, **out})
