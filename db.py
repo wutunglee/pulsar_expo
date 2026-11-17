@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
     distance    TEXT,                      -- half / full / cheer
     invited_by  TEXT REFERENCES users(id),
     arrived_at  TEXT,                      -- 攤位人員報到的時間
+    plan_sent_at TEXT,                     -- 補給時間表已傳到他的 LINE
     consent_at  TEXT,
     created_at  TEXT NOT NULL
 );
@@ -33,7 +34,15 @@ CREATE TABLE IF NOT EXISTS questions (
     at      TEXT NOT NULL
 );
 
--- reward: gummy（報到軟糖）/ bonus（答題加碼）/ crampeace / onsite（現場優惠已使用）
+-- 現場優惠券的使用紀錄：不限次數，只記錄
+CREATE TABLE IF NOT EXISTS onsite_uses (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day     TEXT NOT NULL,
+    at      TEXT NOT NULL
+);
+
+-- reward: gummy（報到軟糖）/ bonus（答題加碼）/ crampeace
 CREATE TABLE IF NOT EXISTS claims (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     reward  TEXT NOT NULL,

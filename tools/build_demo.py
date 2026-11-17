@@ -27,14 +27,14 @@ cfg = {
 MOCK = """
 const DEMO = {cfg: %s, pool: %s};
 const D = {consent: false, distance: null, ans: {}, asked: false, sent: false, partner: false,
-           partnerNew: true, partnerArrived: false, arrived: false, got: {}, eventDay: false, over: false,
+           partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, eventDay: false, over: false,
            ids: [...DEMO.pool.keys()].sort(() => Math.random() - .5).slice(0, 3)};
 function demoState() {
   const quizDone = D.ids.every(i => i in D.ans), qualified = D.partner && D.partnerNew;
   const stock = D.over ? 'ended' : 'ready';
   const absent = D.over && !!D.distance && !D.arrived;
   return {name: '示範', code: 'PUL5R', is_friend: true, is_new: true, consent: D.consent,
-    distance: D.distance, arrived: D.arrived, asked: D.asked, quiz_done: quizDone,
+    distance: D.distance, plan_sent: !!D.distance, arrived: D.arrived, asked: D.asked, quiz_done: quizDone,
     quiz: D.ids.map(i => i in D.ans
       ? {id: i, text: DEMO.pool[i].text, answered: true, correct: D.ans[i] === DEMO.pool[i].answer, truth: DEMO.pool[i].answer, explain: DEMO.pool[i].explain}
       : {id: i, text: DEMO.pool[i].text, answered: false}),
@@ -43,7 +43,7 @@ function demoState() {
       gummy: D.got.gummy ? 'claimed' : !D.distance ? 'locked' : stock,
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
-      onsite: D.got.onsite ? 'used' : !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_text: '全品項 88 折',
+      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, onsite_text: '全品項 88 折',
       absent: absent, absent_code: absent ? 'EV-DEMO-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
@@ -82,7 +82,7 @@ function demoDo(a) {
   }
   if (a === 'pay') {
     if (!D.eventDay) { tip.textContent = '現場優惠券只能在博覽會當天用，先切到博覽會當天。'; return; }
-    D.got.onsite = true; D.arrived = true;
+    D.uses += 1; D.arrived = true;
   }
   if (a === 'over') { D.eventDay = false; D.over = true; }
   S = demoState(); flash = {}; render();

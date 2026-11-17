@@ -21,6 +21,7 @@ FRIENDSHIP_URL = "https://api.line.me/friendship/v1/status"
 TOKEN_URL = "https://api.line.me/oauth2/v3/token"
 PROFILE_URL = "https://api.line.me/v2/bot/profile/"
 REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+PUSH_URL = "https://api.line.me/v2/bot/message/push"
 TIMEOUT = 8
 _token_cache = {}  # channel_id -> (token, 到期時間)
 
@@ -93,4 +94,11 @@ def reply(token, reply_token, text):
     body = json.dumps({"replyToken": reply_token,
                        "messages": [{"type": "text", "text": text}]}).encode()
     _read(urllib.request.Request(REPLY_URL, data=body, headers={
+        "Authorization": f"Bearer {token}", "Content-Type": "application/json"}))
+
+
+def push(token, user_id, text):
+    """主動傳訊息給一位好友。注意：主動訊息會計入官方帳號每月的訊息則數。"""
+    body = json.dumps({"to": user_id, "messages": [{"type": "text", "text": text}]}).encode()
+    _read(urllib.request.Request(PUSH_URL, data=body, headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json"}))

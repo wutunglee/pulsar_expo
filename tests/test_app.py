@@ -230,17 +230,20 @@ class TestCapsAndCoupons(Base):
         self.clock = at("2026-12-18 13:00")
         self.assertEqual(self.checkin("late").get_json()["given"], ["gummy"])
 
-    def test_onsite_coupon_visible_early_used_once_on_site(self):
+    def test_onsite_coupon_visible_early_recorded_each_use(self):
         self.assertEqual(self.join("x", distance=None)["rewards"]["onsite"], "locked")
         a = self.join("a")
         self.assertEqual((a["rewards"]["onsite"], a["rewards"]["onsite_text"]), ("ready", "現場折 100"))
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 400)  # 還沒到展期
         self.clock = at("2026-12-17 13:00")
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)
+        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)  # 不限次數
         s = self.me("a")
-        self.assertEqual(s["rewards"]["onsite"], "used")
+        self.assertEqual((s["rewards"]["onsite"], s["rewards"]["onsite_uses"]), ("ready", 2))
         self.assertTrue(s["arrived"])                       # 結帳也算到場
-        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 409)
+        d = self.app.test_client().get("/api/admin/stats?token=adm").get_json()
+        self.assertEqual((d["onsite_uses"], d["onsite_buyers"]), (2, 1))
+        self.assertEqual(self.staff("/api/staff/onsite", code=self.me("x")["code"]).status_code, 409)
         self.assertEqual(self.checkin("a").get_json()["given"], ["gummy"])   # 軟糖照樣可以領
         self.join("b")
         self.clock = at("2026-12-20 09:00")
@@ -300,7 +303,9 @@ class TestOAIdentity(Base):
     def setUp(self):
         super().setUp()
         self.sent = []
-        for name, fake in (("channel_token", lambda *a: "tok"),
+        self.pushed = []
+        for name, fake in (("push", lambda tok, uid, text: self.pushed.append((uid, text))),
+                           ("channel_token", lambda *a: "tok"),
                            ("get_profile", lambda tok, uid: "名" + uid[-1]),
                            ("reply", lambda tok, rt, text: self.sent.append(text))):
             p = mock.patch.object(line_api, name, side_effect=fake)
@@ -393,6 +398,26 @@ class TestOAIdentity(Base):
         self.assertEqual(self.post("b", "/api/ref", code=a["code"].lower()).status_code, 200)
         self.assertTrue(self.me("a")["team_qualified"])
         self.assertEqual(self.post("b", "/api/ref", code=a["code"]).status_code, 400)
+
+    def test_plan_pushed_once_and_keyword_replies_free(self):
+        self.open("a", "U1")
+        self.hook(self.ev("message", "U1", "補給表"))
+        self.assertIn("還沒選距離", self.sent[-1])
+        self.post("a", "/api/distance", distance="full")
+        self.assertEqual(len(self.pushed), 1)
+        self.assertEqual(self.pushed[0][0], "U1")
+        self.assertIn("全馬補給時間表", self.pushed[0][1])
+        self.assertTrue(self.me("a")["plan_sent"])
+        self.post("a", "/api/distance", distance="half")       # 改距離不再主動傳
+        self.assertEqual(len(self.pushed), 1)
+        self.hook(self.ev("message", "U1", "補給表"))
+        self.assertIn("半馬補給時間表", self.sent[-1])
+
+    def test_plan_push_failure_does_not_block(self):
+        self.open("a", "U1")
+        with mock.patch.object(line_api, "push", side_effect=line_api.LineError("x")):
+            self.assertEqual(self.post("a", "/api/distance", distance="full").status_code, 200)
+        self.assertFalse(self.me("a")["plan_sent"])
 
     def test_reply_failure_still_registers(self):
         with mock.patch.object(line_api, "reply", side_effect=line_api.LineError("x")):

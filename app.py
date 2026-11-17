@@ -54,6 +54,9 @@ def create_app(test_config=None):
         LINE_CHANNEL_ID=env("LINE_CHANNEL_ID", ""),
         LINE_CHANNEL_SECRET=env("LINE_CHANNEL_SECRET", ""),
         LINE_KEYWORD=env("LINE_KEYWORD", "任務卡"),
+        LINE_KEYWORD_PLAN=env("LINE_KEYWORD_PLAN", "補給表"),
+        # 選好距離時主動把補給時間表傳到他的 LINE（每人一則，計入每月訊息則數）
+        PUSH_PLAN=env("PUSH_PLAN", "1") == "1",
         PUBLIC_URL=env("PUBLIC_URL", "").rstrip("/"),
         STAFF_PIN=env("STAFF_PIN", ""),
         ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
@@ -192,6 +195,21 @@ def create_app(test_config=None):
         session.permanent = True
         session["uid"] = uid
 
+    def send_plan_once(uid, dist):
+        """第一次選好距離時，把補給時間表傳到他的 LINE。之後改距離不再主動傳（輸入關鍵字可再拿）。"""
+        c = app.config
+        u = rules.get_user(db(), uid)
+        if (not c["PUSH_PLAN"] or u["plan_sent_at"] or not u["is_friend"]
+                or not c["LINE_CHANNEL_SECRET"] or not uid.startswith("U")):
+            return
+        try:
+            token = line_api.channel_token(c["LINE_CHANNEL_ID"], c["LINE_CHANNEL_SECRET"])
+            line_api.push(token, uid, content.plan_message(dist))
+        except line_api.LineError:
+            app.logger.warning("補給時間表傳送失敗")
+            return
+        db().execute("UPDATE users SET plan_sent_at=? WHERE id=?", (rules.iso(now()), uid))
+
     def card_link(uid):
         base = app.config["PUBLIC_URL"] or request.url_root.rstrip("/")
         return f"{base}/t/{card_signer.dumps(uid)}"
@@ -326,9 +344,12 @@ def create_app(test_config=None):
         if kind == "unfollow":
             db().execute("UPDATE users SET is_friend=0 WHERE id=?", (uid,))
             return
+        want_plan = False
         if kind == "message":
             m = ev.get("message") or {}
-            if m.get("type") != "text" or (m.get("text") or "").strip() != c["LINE_KEYWORD"]:
+            text = (m.get("text") or "").strip() if m.get("type") == "text" else ""
+            want_plan = text == c["LINE_KEYWORD_PLAN"]
+            if text != c["LINE_KEYWORD"] and not want_plan:
                 return  # 其他訊息一律不回，留給真人客服
         elif kind != "follow":
             return
@@ -343,8 +364,14 @@ def create_app(test_config=None):
         upsert_user(uid, name, True, is_new=(kind == "follow"))
         if token and ev.get("replyToken"):
             try:
-                line_api.reply(token, ev["replyToken"],
-                               content.CARD_MESSAGE.format(link=card_link(uid)))
+                u = rules.get_user(db(), uid)
+                if want_plan and u["distance"]:
+                    text = content.plan_message(u["distance"])     # 回覆訊息不計則數
+                elif want_plan:
+                    text = content.PLAN_NOT_YET.format(link=card_link(uid))
+                else:
+                    text = content.CARD_MESSAGE.format(link=card_link(uid))
+                line_api.reply(token, ev["replyToken"], text)
             except line_api.LineError:
                 app.logger.warning("回覆任務卡連結失敗")
 
@@ -367,7 +394,9 @@ def create_app(test_config=None):
         dist = body().get("distance")
         if dist not in rules.DISTANCES:
             return err("請選擇距離")
-        db().execute("UPDATE users SET distance=? WHERE id=?", (dist, session["uid"]))
+        uid = session["uid"]
+        db().execute("UPDATE users SET distance=? WHERE id=?", (dist, uid))
+        send_plan_once(uid, dist)
         return jsonify({"ok": True, "state": me_state()})
 
     @app.post("/api/quiz")
@@ -479,28 +508,19 @@ def create_app(test_config=None):
     @app.post("/api/staff/onsite")
     @need_staff
     def staff_onsite():
-        """結帳時使用現場優惠券。每人一次。會順便記下到場。"""
+        """客人用現場優惠券結帳時記錄一筆。不限次數。會順便記下到場。"""
         n, conn = now(), db()
         if not rules.event_day(n):
             return err("現場優惠券只能在博覽會期間使用")
         u = by_code(body().get("code"))
         if not u:
             return err("找不到這個代碼", 404)
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            status = rules.onsite_status(u, rules.claims_of(conn, u["id"]), n)
-            if status == "ready":
-                conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
-                             (u["id"], "onsite", rules.day_key(n), rules.iso(n)))
-                conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
-                             (rules.iso(n), u["id"]))
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-        if status != "ready":
-            return err("已經用過了" if status == "used" else "對方還沒加好友或還沒選距離",
-                       409, reason=status, user=staff_view(u))
+        if rules.onsite_status(u, n) != "ready":
+            return err("對方還沒加好友或還沒選距離", 409, reason="locked", user=staff_view(u))
+        conn.execute("INSERT INTO onsite_uses(user_id, day, at) VALUES(?,?,?)",
+                     (u["id"], rules.day_key(n), rules.iso(n)))
+        conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
+                     (rules.iso(n), u["id"]))
         return jsonify({"ok": True, "user": staff_view(u)})
 
     @app.get("/api/staff/today")
@@ -530,6 +550,11 @@ def create_app(test_config=None):
             "arrived": one("SELECT COUNT(*) FROM users WHERE arrived_at IS NOT NULL"),
             "quiz_done": one("SELECT COUNT(*) FROM (SELECT user_id FROM quiz GROUP BY user_id "
                              "HAVING COUNT(*) >= ?)", min(rules.QUIZ_SIZE, len(content.QUIZ))),
+            "onsite_uses": one("SELECT COUNT(*) FROM onsite_uses"),
+            "onsite_buyers": one("SELECT COUNT(DISTINCT user_id) FROM onsite_uses"),
+            "onsite_by_day": rows("SELECT day, COUNT(*) n, COUNT(DISTINCT user_id) buyers "
+                                  "FROM onsite_uses GROUP BY day ORDER BY day"),
+            "plans_sent": one("SELECT COUNT(*) FROM users WHERE plan_sent_at IS NOT NULL"),
             "invited": one("SELECT COUNT(*) FROM users WHERE invited_by IS NOT NULL"),
             "invited_new": one("SELECT COUNT(*) FROM users WHERE invited_by IS NOT NULL AND is_new=1"),
             "questions": one("SELECT COUNT(*) FROM questions"),

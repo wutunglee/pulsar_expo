@@ -70,3 +70,17 @@ CARD_MESSAGE = (
     "這是你的博覽會補給兌換券，點開選距離，我們就幫你保留一份：\n{link}\n\n"
     "這個連結是你專屬的，請不要轉傳。想揪朋友，請用兌換券裡的「傳邀請給跑友」。"
 )
+
+DIST_NAME = {"half": "半馬", "full": "全馬", "cheer": "陪跑加油"}
+
+
+def plan_message(distance):
+    """傳到 LINE 聊天室的補給時間表（純文字，比賽當天往上滑就找得到）。"""
+    rows = "\n".join(f"・{when}：{what}" for when, what in PLANS[distance])
+    draft = "" if REVIEWED_BY_DOCTOR else "\n（內容為草稿，待黎醫師確認）"
+    return (f"你的{DIST_NAME[distance]}補給時間表\n\n{rows}\n\n"
+            f"12/17–12/19 到{EVENT['venue']} {EVENT['booth']} 攤位，可以請我們依你的配速調整。"
+            f"之後想再看一次，在這裡輸入「補給表」。{draft}")
+
+
+PLAN_NOT_YET = "你還沒選距離。點開兌換券選好之後，補給時間表就會傳給你：\n{link}"

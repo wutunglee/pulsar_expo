@@ -198,11 +198,10 @@ function onsiteBlock() {
   const r = S.rewards, offer = esc(r.onsite_text || '現場優惠');
   const head = '<div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠券</h3></div>';
   if (r.onsite === 'locked') return '';
-  if (r.onsite === 'used') return `<section class="extra">${head}<div class="coupon used">${offer}<small>已使用</small></div></section>`;
   if (r.onsite === 'ended') return `<section class="extra">${head}<div class="coupon used">${offer}<small>博覽會已結束</small></div></section>`;
   return `<section class="extra">${head}
       <div class="coupon">${offer}<small>${S.today.is_event_day ? '結帳時把這個畫面給工作人員看' : `12/17–12/19 在 ${esc(CFG.event.booth)} 攤位結帳時出示`}</small></div>
-      <p class="note">限博覽會現場使用，每人一次。</p></section>`;
+      <p class="note">限博覽會現場使用，三天都可以用。${r.onsite_uses ? `已使用 ${r.onsite_uses} 次，謝謝你的支持。` : ''}</p></section>`;
 }
 
 function render() {
@@ -252,7 +251,7 @@ function render() {
     <section class="ticket" aria-live="polite">
       <p class="for">${esc(S.name) ? esc(S.name) + '，' : ''}已經幫你保留</p>
       <ul class="items">
-        ${item(`${DIST[S.distance]}補給時間表`, '實體小卡，比賽當天帶著', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
+        ${item(`${DIST[S.distance]}補給時間表`, '現場依你的配速調整', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
         ${item('冰的搖滾話梅 1 杯', '現場試喝', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
         ${item('能量軟糖 2 條', '', r.gummy)}
         ${r.bonus !== 'locked' ? item('加碼：能量軟糖 1 條', '答題加碼', r.bonus) : ''}
@@ -266,6 +265,7 @@ function render() {
       <summary>先看你的${DIST[S.distance]}補給時間表</summary>
       ${plan}
       ${CFG.reviewed ? '' : '<p class="note">內容為草稿，待黎醫師確認。</p>'}
+      ${S.plan_sent ? `<p class="note">這張表也傳到你的 LINE 了。之後在 PulsarPump 聊天室輸入「補給表」，隨時可以再拿一次。</p>` : CFG.identity === 'oa' ? `<p class="note">在 PulsarPump 聊天室輸入「補給表」，就會把這張表傳給你。</p>` : ''}
       <p class="note">到攤位可以請我們依你的配速調整。${S.arrived ? '' : ' <button class="link" data-act="redist">改距離</button>'}</p>
       ${editDistance ? distButtons : ''}
     </details>

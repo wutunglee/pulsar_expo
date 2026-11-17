@@ -28,8 +28,10 @@ const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ?
   const tile = (label, n) => `<div class="fact"><span>${label}</span><b class="big">${n}</b></div>`;
   out.innerHTML = `
     <div class="tiles">${tile('LINE 好友（有券的）', d.friends)}${tile('其中新加入', d.new_friends)}${tile('已選距離（已保留）', d.reserved)}${tile('到過攤位', d.arrived)}</div>
-    <div class="tiles">${tile('答完 3 題', d.quiz_done)}${tile('被朋友揪來', d.invited)}${tile('其中是新好友', d.invited_new)}${tile('提問數', d.questions)}</div>
+    <div class="tiles">${tile('答完 3 題', d.quiz_done)}${tile('現場優惠結帳次數', d.onsite_uses)}${tile('用過優惠的人數', d.onsite_buyers)}</div>
+    <div class="tiles">${tile('被朋友揪來', d.invited)}${tile('其中是新好友', d.invited_new)}${tile('提問數', d.questions)}</div>
     <section class="panel"><h3>每日到攤位人數</h3>${table(['日期', '人數'], d.arrived_by_day.map(x => [x.day, x.n]))}</section>
+    <section class="panel"><h3>每日現場優惠</h3>${table(['日期', '結帳次數', '人數'], d.onsite_by_day.map(x => [x.day, x.n, x.buyers]))}</section>
     <section class="panel"><h3>每日新領券人數</h3>${table(['日期', '人數'], d.new_by_day.map(x => [x.day, x.n]))}</section>
     <section class="panel"><h3>發放與使用</h3>${table(['日期', '項目', '次數'], d.claims.map(x => [x.day, NAME[x.reward] || x.reward, x.n]))}</section>
     <section class="panel"><h3>距離</h3>${table(['距離', '人數'], d.by_distance.map(x => [NAME[x.distance] || x.distance, x.n]))}</section>

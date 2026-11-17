@@ -6,7 +6,7 @@
   - 加好友＋選距離 → 兌換券。到攤位報到：實體補給時間表、試喝、軟糖 2 條。
   - 加碼一：答完 3 題真的假的（不論對錯）→ 再 1 條軟糖。
   - 加碼二：揪一位「新加入的好友」，兩人都到攤位 → 各 1 包勁速補。
-  - 現場優惠券領券後就看得到，限博覽會現場結帳使用；沒來的人活動後看到官網折扣碼。
+  - 現場優惠券領券後就看得到，限博覽會現場結帳使用，不限次數、只記錄；沒來的人活動後看到官網折扣碼。
 """
 import hashlib
 from datetime import datetime
@@ -154,10 +154,8 @@ def crampeace_status(db, u, claims, n):
     return _stock(db, "crampeace", n)
 
 
-def onsite_status(u, claims, n):
-    """現場優惠券：領券後就看得到，博覽會現場結帳時由工作人員按「已使用」，每人一次。"""
-    if "onsite" in claims:
-        return "used"
+def onsite_status(u, n):
+    """現場優惠券：領券後就看得到，限博覽會現場結帳使用。不限次數，工作人員每次結帳記錄一筆。"""
     if not u["is_friend"] or not u["distance"]:
         return "locked"
     return "ended" if event_over(n) else "ready"
@@ -191,6 +189,7 @@ def state(db, uid, n, cfg, quiz_pool):
         "consent": bool(u["consent_at"]),
         "distance": u["distance"],
         "arrived": bool(u["arrived_at"]),
+        "plan_sent": bool(u["plan_sent_at"]),
         "asked": bool(db.execute("SELECT 1 FROM questions WHERE user_id=?", (uid,)).fetchone()),
         "quiz": quiz,
         "quiz_done": all(q["answered"] for q in quiz),
@@ -202,7 +201,9 @@ def state(db, uid, n, cfg, quiz_pool):
             "gummy": gummy_status(db, u, claims, n),
             "bonus": bonus_status(db, u, claims, n, len(quiz_pool)),
             "crampeace": crampeace_status(db, u, claims, n),
-            "onsite": onsite_status(u, claims, n),
+            "onsite": onsite_status(u, n),
+            "onsite_uses": db.execute("SELECT COUNT(*) c FROM onsite_uses WHERE user_id=?",
+                                      (uid,)).fetchone()["c"],
             "onsite_text": cfg.get("ONSITE_OFFER", ""),
             "absent": absent,
             "absent_code": cfg.get("COUPON_ABSENT", "") if absent else "",
