@@ -180,7 +180,7 @@ function rewardCoupon5() {
 function station(k, tags, title, body) {
   const done = S.stations[k];
   const tagHtml = tags.map(t => `<span class="tag ${t[0]}">${t[1]}</span>`).join('') + (done ? '<span class="tag ok">已完成</span>' : '');
-  return `<li class="stn ${done ? 'done' : ''}"><div class="mark">0${k}</div>
+  return `<li class="stn ${done ? 'done' : ''}" id="stn-${k}"><div class="mark">0${k}</div>
     <div class="card"><div class="tags">${tagHtml}</div><h3>${title}</h3>${body}</div></li>`;
 }
 
@@ -222,6 +222,8 @@ function render() {
       <button data-act="ref">加入他的隊</button></div>${msg('ref')}`}`;
 
   const s4 = S.stations['4'] ? '<p class="muted">謝謝你來攤位。</p>'
+    : S.today.over ? '<p class="muted">博覽會已經結束，這一站不能再蓋章了。</p>'
+    : !S.today.is_event_day ? `<p class="muted">12/17–12/19 帶著這張任務卡到 ${esc(CFG.event.booth)} 攤位，喝一杯冰的搖滾話梅，跟工作人員拿當日通關碼來蓋這一格。三天都可以來。</p>`
     : `<p class="muted">出示這張任務卡，試喝後工作人員會給你當日通關碼。三天都可以來。</p>
        <div class="codebox"><input id="code4" placeholder="輸入通關碼" autocomplete="off" autocapitalize="characters" aria-label="通關碼">
        <button data-act="code">送出</button></div>${msg('code')}`;
@@ -232,12 +234,21 @@ function render() {
        <button data-act="ask">送出問題</button>${msg('ask')}
        <p class="note">不回答個人病情、用藥與檢查數值，這類狀況請直接就醫。</p>`;
 
+  // 下一步：線上能做的先做（1、2、3、5），第 4 站留到現場
+  const NEXT = {1: '選你的距離', 2: '回答一題真的假的', 3: '揪一位跑友', 5: '問黎醫師一題', 4: '到攤位試喝'};
+  const todo = [1, 2, 3, 5, 4].filter(k => !S.stations[k]);
+  const onlyBooth = todo.length === 1 && todo[0] === 4 && !S.today.is_event_day;
+  const next = !todo.length ? '<p class="next-done">5 格都蓋滿了。</p>'
+    : onlyBooth ? (S.today.over ? '' : `<p class="next-done">線上的都完成了。最後一格，12/17 起到 ${esc(CFG.event.booth)} 攤位蓋。</p>`)
+    : `<button class="primary" data-act="goto" data-v="${todo[0]}">${S.count ? '下一格' : '開始第一格'}：${NEXT[todo[0]]}</button>`;
+
   app.innerHTML = `${friend}
     <section class="progress" aria-live="polite">
       <div class="progress-top"><span class="muted">已蓋章</span><b>${S.count} / 5</b></div>
       <div class="stamps" role="img" aria-label="已完成 ${S.count} 站，共 5 站">${[1, 2, 3, 4, 5].map(k => S.stations[k]
         ? `<div class="slot done ${seen && !seen[k] ? 'new' : ''}">${STAMP[k]}</div>`
         : `<div class="slot">${k}</div>`).join('')}</div>
+      ${next}
       <div class="mycode"><span class="muted">出示給攤位人員的代碼</span><b>${esc(S.code)}</b></div>
     </section>
     <section class="rewards">${rewardGummy()}${rewardCrampeace()}${rewardCoupon5()}
@@ -257,6 +268,11 @@ function render() {
 function bind() {
   app.querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', () => {
     const a = el.dataset.act, v = el.dataset.v;
+    if (a === 'goto') {
+      const t = document.getElementById('stn-' + v);
+      if (t) t.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
+      return;
+    }
     el.disabled = true;
     if (a === 'consent') return act('consent', () => api('/api/consent', {}));
     if (a === 'refresh') return act('refresh', async () => {

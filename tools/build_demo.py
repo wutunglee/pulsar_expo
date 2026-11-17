@@ -28,7 +28,7 @@ cfg = {
 MOCK = """
 const DEMO = {cfg: %s, myth: %s, code: 'PULSAR'};
 const D = {consent: false, distance: null, st: {1: false, 2: false, 3: false, 4: false, 5: false},
-           partner: false, partner4: false, eventDay: false};
+           partner: false, partner4: false, eventDay: false, sent: false};
 function demoState() {
   const n = Object.values(D.st).filter(Boolean).length, all = n === 5;
   return {name: '示範', code: 'PUL5R', is_friend: true, consent: D.consent, distance: D.distance,
@@ -56,12 +56,20 @@ async function api(path, data) {
   return ok();
 }
 function demoDo(a) {
-  if (a === 'friend') { D.partner = true; D.st[3] = true; }
+  const tip = document.getElementById('demoTip');
+  tip.textContent = '';
+  if (a === 'friend') {
+    if (!D.sent) { tip.textContent = '先在第 3 站按「傳邀請給跑友」，再按這個按鈕。'; return; }
+    D.partner = true; D.st[3] = true;
+  }
   if (a === 'day') D.eventDay = !D.eventDay;
-  if (a === 'mate') D.partner4 = true;
+  if (a === 'mate') {
+    if (!D.st[3] || !D.st[4]) { tip.textContent = '要先組隊（第 3 站）並完成第 4 站，隊友到攤位才有意義。'; return; }
+    D.partner4 = true;
+  }
   if (a === 'reset') { location.reload(); return; }
   if (a === 'landing') { landing(); return; }
-  document.getElementById('demoDay').textContent = D.eventDay ? '改回活動前' : '切到博覽會當天';
+  document.getElementById('demoDay').textContent = D.eventDay ? '2. 改回活動前' : '2. 切到博覽會當天';
   S = demoState(); flash = {}; if (CFG) render();
 }
 """ % (json.dumps(cfg, ensure_ascii=False),
@@ -69,6 +77,8 @@ function demoDo(a) {
 
 js = read("static/app.js")
 js, n = re.subn(r"async function api\(path, data, method\) \{.*?\n\}\n", lambda m: MOCK, js, count=1, flags=re.S)
+assert n == 1
+js, n = re.subn(r"async function invite\(\) \{", "async function invite() { D.sent = true;", js, count=1)
 assert n == 1
 
 html = read("templates/index.html")
@@ -82,12 +92,13 @@ html = html.replace('<link rel="stylesheet" href="/static/card.css">',
 html = html.replace('src="/static/logo_black.png"', f'src="data:image/png;base64,{logo}"')
 html = html.replace('<div class="wrap">', """<div class="wrap">
   <div class="demo"><b>示範版：資料不會儲存，重新整理就歸零</b>
-    用下面的按鈕模擬現場才會發生的事。第 4 站的示範通關碼是 PULSAR（要先切到博覽會當天）。
-    <div><button onclick="demoDo('friend')">朋友加入並完成第 1 站</button>
-    <button onclick="demoDo('day')" id="demoDay">切到博覽會當天</button>
-    <button onclick="demoDo('mate')">隊友也到攤位</button>
-    <button onclick="demoDo('landing')">看加好友引導頁</button>
-    <button onclick="demoDo('reset')">重來</button></div></div>""", 1)
+    先照著任務卡自己做。下面的按鈕只用來模擬「別人」或「時間」：朋友接受邀請、博覽會開始、隊友到攤位。第 4 站的示範通關碼是 PULSAR。
+    <div><button onclick="demoDo('landing')">0. 看加好友引導頁</button>
+    <button onclick="demoDo('friend')">1. 朋友接受了邀請</button>
+    <button onclick="demoDo('day')" id="demoDay">2. 切到博覽會當天</button>
+    <button onclick="demoDo('mate')">3. 隊友也到攤位</button>
+    <button onclick="demoDo('reset')">重來</button></div>
+    <p id="demoTip" style="color:#ffb199;margin-top:8px"></p></div>""", 1)
 html = html.replace('<script src="/static/app.js"></script>', "<script>\n" + js + "\n</script>")
 html = html.replace("<title>", "<title>示範｜", 1)
 open(sys.argv[1], "w", encoding="utf-8").write(html)
