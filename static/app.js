@@ -118,7 +118,7 @@ const inviteUrl = () => CFG.liff_id
 
 async function invite() {
   const text = CFG.invite_text + inviteUrl();
-  if (!window.liff && /Android|iPhone|iPad|Line\//i.test(navigator.userAgent)) {
+  if (!CFG.demo && !window.liff && /Android|iPhone|iPad|Line\//i.test(navigator.userAgent)) {
     // 不在 LIFF 裡時，用 LINE 的分享連結開啟選擇聊天室的畫面
     location.href = 'https://line.me/R/share?text=' + encodeURIComponent(text);
     return {note: '朋友加入好友並完成第 1 站後，這一站就會完成。'};
