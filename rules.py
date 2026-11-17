@@ -41,6 +41,10 @@ def iso(n):
     return n.astimezone(TZ).isoformat(timespec="seconds")
 
 
+def parse(s):
+    return datetime.fromisoformat(s)
+
+
 def day_key(n):
     return n.astimezone(TZ).strftime("%Y-%m-%d")
 

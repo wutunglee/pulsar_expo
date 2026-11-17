@@ -60,8 +60,15 @@ class Base(unittest.TestCase):
     def post(self, who, path, **data):
         return self.c(who).post(path, json=data)
 
-    def staff(self, path, pin="4321", **data):
-        return self.app.test_client().post(path, json=data, headers={"X-Staff-Pin": pin})
+    def staff(self, path, pin="4321", name="阿志", **data):
+        from urllib.parse import quote
+        return self.app.test_client().post(path, json=data, headers={
+            "X-Staff-Pin": pin, "X-Staff-Name": quote(name)})
+
+    def staff_get(self, path, name="阿志"):
+        from urllib.parse import quote
+        return self.app.test_client().get(path, headers={
+            "X-Staff-Pin": "4321", "X-Staff-Name": quote(name)}).get_json()
 
     def checkin(self, who):
         return self.staff("/api/staff/checkin", code=self.me(who)["code"])
@@ -290,6 +297,103 @@ class TestCapsAndCoupons(Base):
         self.assertFalse(self.me("came")["rewards"]["absent"])
         self.assertFalse(self.me("nofriend")["rewards"]["absent"])
         self.assertEqual(self.me("missed")["rewards"]["gummy"], "ended")
+
+
+class TestUndoAndStaffName(Base):
+    def test_name_required_for_actions_not_lookup(self):
+        a = self.join("a")
+        self.clock = at("2026-12-17 13:00")
+        r = self.staff("/api/staff/checkin", name="", code=a["code"])
+        self.assertEqual((r.status_code, r.get_json()["reason"]), (400, "no_name"))
+        self.assertEqual(self.staff("/api/staff/lookup", name="", code=a["code"]).status_code, 200)
+        self.assertFalse(self.me("a")["arrived"])
+
+    def test_undo_checkin_restores_everything(self):
+        a = self.join("a")
+        self.quiz("a")
+        self.clock = at("2026-12-17 13:00")
+        r = self.staff("/api/staff/checkin", name="小美", code=a["code"]).get_json()
+        self.assertEqual(r["given"], ["gummy", "bonus"])
+        left = self.app.test_client().get("/api/staff/today", headers={"X-Staff-Pin": "4321"}).get_json()
+        self.assertEqual(left["gummy"]["left"], 149)
+        recent = self.staff_get("/api/staff/recent", name="小美")["items"]
+        self.assertEqual((recent[0]["id"], recent[0]["can_undo"]), (r["log_id"], True))
+        self.assertEqual(self.staff("/api/staff/undo", name="阿明", log_id=r["log_id"]).status_code, 409)   # 別人不能取消
+        self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=r["log_id"]).status_code, 200)
+        s = self.me("a")
+        self.assertEqual((s["arrived"], s["rewards"]["gummy"], s["rewards"]["bonus"]), (False, "ready", "ready"))
+        left = self.app.test_client().get("/api/staff/today", headers={"X-Staff-Pin": "4321"}).get_json()
+        self.assertEqual(left["gummy"]["left"], 150)                                              # 份數還回去
+        self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=r["log_id"]).status_code, 409)   # 不能取消兩次
+        self.assertEqual(self.staff("/api/staff/checkin", name="小美", code=a["code"]).get_json()["given"],
+                         ["gummy", "bonus"])                                                      # 可以重新報到
+
+    def test_undo_time_limit_and_order(self):
+        a = self.join("a")
+        self.post("a", "/api/draw", pick=0)
+        self.clock = at("2026-12-17 13:00")
+        c1 = self.staff("/api/staff/checkin", name="小美", code=a["code"]).get_json()["log_id"]
+        o1 = self.staff("/api/staff/onsite", name="小美", code=a["code"]).get_json()["log_id"]
+        self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=c1).status_code, 409)   # 後面還有一筆
+        flags = {i["id"]: i["can_undo"] for i in self.staff_get("/api/staff/recent", name="小美")["items"]}
+        self.assertEqual((flags[c1], flags[o1]), (False, True))                 # 畫面只讓最新那筆可取消
+        self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=o1).status_code, 200)
+        self.assertEqual(self.me("a")["rewards"]["onsite_uses"], 0)
+        self.assertTrue(self.me("a")["arrived"])                         # 到場是報到那筆記的，不受影響
+        self.clock = at("2026-12-17 13:11")
+        self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=c1).status_code, 409)   # 超過 10 分鐘
+
+    def test_undo_onsite_that_marked_arrival(self):
+        a = self.join("a")
+        self.post("a", "/api/draw", pick=3)
+        self.clock = at("2026-12-17 13:00")
+        o = self.staff("/api/staff/onsite", name="小美", code=a["code"]).get_json()["log_id"]
+        self.assertTrue(self.me("a")["arrived"])
+        self.staff("/api/staff/undo", name="小美", log_id=o)
+        self.assertFalse(self.me("a")["arrived"])
+
+    def test_second_checkin_with_nothing_new_is_not_logged(self):
+        a = self.join("a")
+        self.clock = at("2026-12-17 13:00")
+        self.staff("/api/staff/checkin", name="小美", code=a["code"])
+        self.assertIsNone(self.staff("/api/staff/checkin", name="小美", code=a["code"]).get_json()["log_id"])
+        self.assertEqual(len(self.staff_get("/api/staff/recent", name="小美")["items"]), 1)
+
+
+class TestAdminExports(Base):
+    def test_participants_csv(self):
+        a = self.join("a", new=False)
+        self.join("b", ref=a["code"], distance="full")
+        self.post("b", "/api/draw", pick=1)
+        self.clock = at("2026-12-17 13:00")
+        self.checkin("b")
+        cl = self.app.test_client()
+        self.assertEqual(cl.get("/api/admin/participants.csv?token=x").status_code, 401)
+        text = cl.get("/api/admin/participants.csv?token=adm").get_data(as_text=True)
+        lines = text.lstrip("﻿").strip().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertIn("原本的好友", lines[1])
+        row_b = lines[2].split(",")
+        self.assertEqual((row_b[3], row_b[4], row_b[6], row_b[8][:10], row_b[11]),
+                         ("新好友", "全馬", a["code"], "2026-12-17", "2026-12-17"))
+        self.assertNotIn("dev:b", text)                       # 不含識別碼
+
+    def test_question_reply_status(self):
+        self.join("a")
+        self.post("a", "/api/ask", text="賽前吃什麼")
+        self.post("a", "/api/ask", text="抽筋怎麼辦")
+        cl = self.app.test_client()
+        items = cl.get("/api/admin/questions?token=adm").get_json()["items"]
+        self.assertEqual([i["answered_at"] for i in items], [None, None])
+        self.assertEqual(cl.post("/api/admin/question?token=x", json={"id": items[0]["id"], "answered": True}).status_code, 401)
+        cl.post("/api/admin/question?token=adm", json={"id": items[0]["id"], "answered": True})
+        d = cl.get("/api/admin/stats?token=adm").get_json()
+        self.assertEqual((d["questions"], d["questions_open"]), (2, 1))
+        items = cl.get("/api/admin/questions?token=adm").get_json()["items"]
+        self.assertIsNone(items[0]["answered_at"])            # 沒回的排前面
+        self.assertIn("已回覆", cl.get("/api/admin/questions.csv?token=adm").get_data(as_text=True))
+        cl.post("/api/admin/question?token=adm", json={"id": items[1]["id"], "answered": False})
+        self.assertEqual(cl.get("/api/admin/stats?token=adm").get_json()["questions_open"], 2)
 
 
 class TestStaffAndAdmin(Base):

@@ -12,6 +12,7 @@
   <div class="brand"><img src="/static/logo_white.png" alt="PulsarPump 脈衝星" height="36" style="height:36px;width:auto;margin-right:6px">攤位核銷</div>
 
   <section class="panel" id="login">
+    <label for="who">你的名字（每筆操作會記下是誰做的）<input id="who" maxlength="20" autocomplete="off" placeholder="例如：小美"></label>
     <label for="pin">工作人員 PIN<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
     <button class="primary" id="enter">進入</button>
     <p class="msg bad" id="loginMsg" hidden></p>
@@ -35,17 +36,23 @@
     </section>
 
     <section class="panel" id="user" hidden></section>
+
+    <section class="panel" id="recentBox" hidden>
+      <div class="progress-top"><h3>我最近的操作</h3><span class="muted" id="whoami"></span></div>
+      <p class="note">按錯了可以在 <span id="undoMin">10</span> 分鐘內取消。取消後，發出去的東西請記得收回。</p>
+      <div id="recent"></div>
+    </section>
   </div>
 </div>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let PIN = '', FRIEND_CHECK = '';
-try { PIN = sessionStorage.getItem('pin') || ''; } catch (e) {}
+let PIN = '', WHO = '', FRIEND_CHECK = '';
+try { PIN = sessionStorage.getItem('pin') || ''; WHO = localStorage.getItem('staffName') || ''; } catch (e) {}
 
 async function call(path, data) {
   const r = await fetch(path, {method: data ? 'POST' : 'GET',
-    headers: {'Content-Type': 'application/json', 'X-Staff-Pin': PIN},
+    headers: {'Content-Type': 'application/json', 'X-Staff-Pin': PIN, 'X-Staff-Name': encodeURIComponent(WHO)},
     body: data ? JSON.stringify(data) : undefined});
   let j = {}; try { j = await r.json(); } catch (e) {}
   return {status: r.status, ...j};
@@ -99,6 +106,7 @@ function show(u, note) {
     const x = await call('/api/staff/friend', {code: u.code});
     say(x.ok ? '已確認好友。' : (x.error || '操作失敗'), x.ok);
     if (x.user) show(x.user);
+    recent();
   };
   $('checkin').onclick = async () => {
     $('checkin').disabled = true;
@@ -110,7 +118,7 @@ function show(u, note) {
     say('已記錄。', true);
     show(x.user, `<div class="panel alert"><h3>請交給他</h3><p class="big" style="font-size:24px;line-height:1.5">${things.length ? things.map(esc).join('<br>') : '這次沒有要給的東西'}</p>${mates}</div>`);
     $('user').querySelectorAll('[data-mate]').forEach(b => b.onclick = () => { $('code').value = b.dataset.mate; lookup(); });
-    today();
+    today(); recent();
   };
   const ob = $('onsite');
   if (ob) ob.onclick = async () => {
@@ -118,7 +126,28 @@ function show(u, note) {
     const x = await call('/api/staff/onsite', {code: u.code});
     say(x.ok ? '已記錄一筆現場優惠。' : (x.error || '操作失敗'), x.ok);
     if (x.user) show(x.user);
+    recent();
   };
+}
+
+const GIVE_SHORT = {gummy: '軟糖 2 條', bonus: '加碼軟糖 1 條', crampeace: '勁速補 1 包'};
+async function recent() {
+  const r = await call('/api/staff/recent');
+  if (!r.ok) return;
+  $('recentBox').hidden = !r.items.length;
+  $('undoMin').textContent = r.undo_minutes;
+  $('whoami').textContent = WHO;
+  $('recent').innerHTML = r.items.map(x => `<div class="reward ${x.undone ? '' : 'on'}">
+      <b>${esc(x.at)}　${esc(x.name) || '（未提供名稱）'}（${esc(x.code)}）</b>
+      <span>${esc(x.what)}${x.given.length ? '：' + x.given.map(k => GIVE_SHORT[k]).join('、') : ''}${x.undone ? '　已取消' : ''}</span>
+      ${x.can_undo ? `<button data-undo="${x.id}">按錯了，取消這筆</button>` : ''}</div>`).join('');
+  $('recent').querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const x = await call('/api/staff/undo', {log_id: Number(b.dataset.undo)});
+    say(x.ok ? '已取消。發出去的東西請記得收回。' : (x.error || '取消失敗'), x.ok);
+    if (x.user && !$('user').hidden) show(x.user);
+    today(); recent();
+  });
 }
 
 async function lookup() {
@@ -130,9 +159,11 @@ async function lookup() {
 
 async function enter() {
   PIN = $('pin').value || PIN;
+  WHO = ($('who').value || WHO).trim();
+  if (!WHO) { $('loginMsg').hidden = false; $('loginMsg').textContent = '請先輸入你的名字。'; return; }
   if (await today()) {
-    try { sessionStorage.setItem('pin', PIN); } catch (e) {}
-    $('login').hidden = true; $('main').hidden = false; $('code').focus();
+    try { sessionStorage.setItem('pin', PIN); localStorage.setItem('staffName', WHO); } catch (e) {}
+    $('login').hidden = true; $('main').hidden = false; $('code').focus(); recent();
   } else if ($('pin').value) {
     $('loginMsg').hidden = false; $('loginMsg').textContent = 'PIN 不正確，或系統尚未設定。';
   }
@@ -142,7 +173,8 @@ $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') enter(); });
 $('lookup').onclick = lookup;
 $('code').addEventListener('keydown', e => { if (e.key === 'Enter') lookup(); });
 $('reload').onclick = today;
-if (PIN) enter();
+$('who').value = WHO;
+if (PIN && WHO) enter();
 </script>
 </body>
 </html>

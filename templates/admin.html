@@ -29,7 +29,7 @@ const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ?
   out.innerHTML = `
     <div class="tiles">${tile('LINE 好友（有券的）', d.friends)}${tile('其中新加入', d.new_friends)}${tile('已選距離（已保留）', d.reserved)}${tile('到過攤位', d.arrived)}</div>
     <div class="tiles">${tile('答完 3 題', d.quiz_done)}${tile('現場優惠結帳次數', d.onsite_uses)}${tile('用過優惠的人數', d.onsite_buyers)}</div>
-    <div class="tiles">${tile('被朋友揪來', d.invited)}${tile('其中是新好友', d.invited_new)}${tile('提問數', d.questions)}</div>
+    <div class="tiles">${tile('被朋友揪來', d.invited)}${tile('其中是新好友', d.invited_new)}${tile('提問數', d.questions)}${tile('還沒回覆的提問', d.questions_open)}</div>
     <section class="panel"><h3>每日到攤位人數</h3>${table(['日期', '人數'], d.arrived_by_day.map(x => [x.day, x.n]))}</section>
     <section class="panel"><h3>抽到的現場優惠</h3>${table(['獎項', '人數'], d.draws.map(x => [x.prize, x.n]))}</section>
     <section class="panel"><h3>每日現場優惠</h3>${table(['日期', '結帳次數', '人數'], d.onsite_by_day.map(x => [x.day, x.n, x.buyers]))}</section>
@@ -37,9 +37,32 @@ const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ?
     <section class="panel"><h3>發放與使用</h3>${table(['日期', '項目', '次數'], d.claims.map(x => [x.day, NAME[x.reward] || x.reward, x.n]))}</section>
     <section class="panel"><h3>距離</h3>${table(['距離', '人數'], d.by_distance.map(x => [NAME[x.distance] || x.distance, x.n]))}</section>
     <section class="panel"><h3>邀請最多的人</h3>${table(['名稱（代碼）', '帶進人數'], d.top_inviters.map(x => [`${x.name}（${x.code}）`, x.n]))}</section>
+    <section class="panel"><h3>各工作人員的操作</h3>${table(['名字', '操作次數', '其中取消'], d.by_staff.map(x => [x.staff, x.n, x.undone]))}</section>
+    <section class="panel"><h3>黎醫師提問</h3>
+      <p class="note">在 LINE 官方帳號的聊天室回覆後，回來這裡勾選。還沒回的排在前面。</p>
+      <div id="qs"><p class="muted">載入中…</p></div></section>
+    <a class="btn primary" href="/api/admin/participants.csv?token=${encodeURIComponent(token)}">下載參加者名單（CSV）</a>
     <a class="btn" href="/api/admin/questions.csv?token=${encodeURIComponent(token)}">下載所有提問（CSV）</a>
     <p class="note">「新加入」是活動期間才加好友的人。好友總數的正式數字仍以 LINE 官方帳號後台為準。</p>`;
+  loadQuestions();
 })();
+
+async function loadQuestions() {
+  const t = encodeURIComponent(token);
+  const r = await (await fetch('/api/admin/questions?token=' + t)).json().catch(() => ({}));
+  const box = document.getElementById('qs');
+  if (!r.ok) { box.innerHTML = '<p class="msg bad">提問讀取失敗</p>'; return; }
+  box.innerHTML = r.items.map(q => `<label class="reward ${q.answered_at ? '' : 'on'}" style="flex-direction:row;gap:12px;align-items:flex-start;cursor:pointer">
+      <input type="checkbox" data-q="${q.id}" ${q.answered_at ? 'checked' : ''} style="width:24px;height:24px;flex:none;margin-top:4px">
+      <span><b>${esc(q.text)}</b><br><span class="muted">${esc(q.name) || '（未提供名稱）'}（${esc(q.code)}）・${esc(NAME[q.distance] || '')}・${esc(q.at.slice(5, 16).replace('T', ' '))}${q.answered_at ? '・已回覆' : ''}</span></span></label>`).join('')
+    || '<p class="muted">還沒有人提問。</p>';
+  box.querySelectorAll('[data-q]').forEach(c => c.onchange = async () => {
+    c.disabled = true;
+    await fetch('/api/admin/question?token=' + t, {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: Number(c.dataset.q), answered: c.checked})});
+    loadQuestions();
+  });
+}
 </script>
 </body>
 </html>

@@ -2,9 +2,11 @@
 import csv
 import hmac
 import io
+import json
 import os
 import secrets
 import time
+import urllib.parse
 from datetime import timedelta
 from functools import wraps
 
@@ -444,6 +446,27 @@ def create_app(test_config=None):
 
     # ---------- 攤位人員 ----------
 
+    UNDO_MINUTES = 10
+
+    def staff_name():
+        return (request.headers.get("X-Staff-Name") or "").strip()[:20]
+
+    def need_name(fn):
+        """會改資料的操作要帶工作人員的名字（中文要先編碼，所以從 header 解碼）。"""
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            g.staff = urllib.parse.unquote(staff_name())[:20].strip()
+            if not g.staff:
+                return err("請先輸入你的名字", 400, reason="no_name")
+            return fn(*a, **kw)
+        return wrapper
+
+    def log_action(action, uid, **detail):
+        cur = db().execute(
+            "INSERT INTO staff_log(at, staff, action, user_id, detail) VALUES(?,?,?,?,?)",
+            (rules.iso(now()), g.staff, action, uid, json.dumps(detail, ensure_ascii=False)))
+        return cur.lastrowid
+
     def by_code(code):
         return db().execute("SELECT * FROM users WHERE code=?",
                             (str(code or "").strip().upper(),)).fetchone()
@@ -465,6 +488,7 @@ def create_app(test_config=None):
 
     @app.post("/api/staff/friend")
     @need_staff
+    @need_name
     def staff_friend():
         """FRIEND_CHECK=staff 時，人員看過對方手機上的好友畫面後按下確認。"""
         if app.config["FRIEND_CHECK"] != "staff":
@@ -473,10 +497,12 @@ def create_app(test_config=None):
         if not u:
             return err("找不到這個代碼", 404)
         db().execute("UPDATE users SET is_friend=1 WHERE id=?", (u["id"],))
-        return jsonify({"ok": True, "user": staff_view(u)})
+        log_id = log_action("friend", u["id"], was_friend=bool(u["is_friend"]))
+        return jsonify({"ok": True, "log_id": log_id, "user": staff_view(u)})
 
     @app.post("/api/staff/checkin")
     @need_staff
+    @need_name
     def staff_checkin():
         """到攤位報到。記下到場，並把此刻可以領的實體贈品一次發完。
         答題加碼、勁速補若晚一點才達成，再查一次、再按一次即可，不會重複發。"""
@@ -490,7 +516,7 @@ def create_app(test_config=None):
             return err("對方還不是好友，請他先加入", 409, reason="not_friend", user=staff_view(u))
         if not u["distance"]:
             return err("請他先在兌換券上選距離", 409, reason="no_distance", user=staff_view(u))
-        given = []
+        given, first = [], not u["arrived_at"]
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
@@ -520,10 +546,13 @@ def create_app(test_config=None):
             p = rules.get_user(conn, pid)
             if rules.crampeace_status(conn, p, rules.claims_of(conn, pid), n) == "ready":
                 mates.append({"name": p["name"], "code": p["code"]})
-        return jsonify({"ok": True, "given": given, "mates_ready": mates, "user": staff_view(u)})
+        log_id = log_action("checkin", u["id"], given=given, first=first) if (given or first) else None
+        return jsonify({"ok": True, "given": given, "first": first, "log_id": log_id,
+                        "mates_ready": mates, "user": staff_view(u)})
 
     @app.post("/api/staff/onsite")
     @need_staff
+    @need_name
     def staff_onsite():
         """客人用現場優惠券結帳時記錄一筆。不限次數。會順便記下到場。"""
         n, conn = now(), db()
@@ -536,11 +565,79 @@ def create_app(test_config=None):
             return err("對方還沒加好友或還沒選距離", 409, reason="locked", user=staff_view(u))
         if not rules.prize_of(conn, u["id"]):
             return err("他還沒抽現場優惠，請他在券上先抽", 409, reason="no_prize", user=staff_view(u))
-        conn.execute("INSERT INTO onsite_uses(user_id, day, at) VALUES(?,?,?)",
-                     (u["id"], rules.day_key(n), rules.iso(n)))
+        cur = conn.execute("INSERT INTO onsite_uses(user_id, day, at) VALUES(?,?,?)",
+                           (u["id"], rules.day_key(n), rules.iso(n)))
         conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
                      (rules.iso(n), u["id"]))
-        return jsonify({"ok": True, "user": staff_view(u)})
+        log_id = log_action("onsite", u["id"], use_id=cur.lastrowid, first=not u["arrived_at"])
+        return jsonify({"ok": True, "log_id": log_id, "user": staff_view(u)})
+
+    def log_view(r, n):
+        age = (n - rules.parse(r["at"])).total_seconds() / 60
+        d = json.loads(r["detail"])
+        what = {"checkin": "報到" + ("並發放" if d.get("given") else ""),
+                "onsite": "記錄現場優惠一筆", "friend": "確認好友"}[r["action"]]
+        return {"id": r["id"], "at": r["at"][11:16], "name": r["name"], "code": r["code"],
+                "action": r["action"], "given": d.get("given", []), "what": what,
+                "undone": bool(r["undone_at"]),
+                # 只有這位客人最新的一筆可以取消，要先取消新的才能取消舊的
+                "can_undo": (not r["undone_at"] and age <= UNDO_MINUTES and r["staff"] == g.staff
+                             and not db().execute(
+                                 "SELECT 1 FROM staff_log WHERE user_id=? AND id>? AND undone_at IS NULL",
+                                 (r["user_id"], r["id"])).fetchone())}
+
+    @app.get("/api/staff/recent")
+    @need_staff
+    @need_name
+    def staff_recent():
+        """這位工作人員最近的操作，用來取消按錯的那一筆。"""
+        n = now()
+        rs = db().execute(
+            "SELECT l.*, u.name, u.code FROM staff_log l JOIN users u ON u.id=l.user_id "
+            "WHERE l.staff=? ORDER BY l.id DESC LIMIT 6", (g.staff,)).fetchall()
+        return jsonify({"ok": True, "items": [log_view(r, n) for r in rs],
+                        "undo_minutes": UNDO_MINUTES})
+
+    @app.post("/api/staff/undo")
+    @need_staff
+    @need_name
+    def staff_undo():
+        """取消自己剛才按錯的一筆。限 10 分鐘內，且之後沒有人再對這位客人操作過。"""
+        n, conn = now(), db()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            r = conn.execute("SELECT * FROM staff_log WHERE id=?", (body().get("log_id"),)).fetchone()
+            why = None
+            if not r:
+                why = "找不到這筆紀錄"
+            elif r["undone_at"]:
+                why = "這筆已經取消過了"
+            elif r["staff"] != g.staff:
+                why = f"這筆是 {r['staff']} 操作的，請他本人取消"
+            elif (n - rules.parse(r["at"])).total_seconds() > UNDO_MINUTES * 60:
+                why = f"超過 {UNDO_MINUTES} 分鐘，不能取消了。請告訴負責人"
+            elif conn.execute("SELECT 1 FROM staff_log WHERE user_id=? AND id>? AND undone_at IS NULL",
+                              (r["user_id"], r["id"])).fetchone():
+                why = "這位客人之後還有別的操作，請先取消比較新的那一筆"
+            if not why:
+                d, uid = json.loads(r["detail"]), r["user_id"]
+                if r["action"] == "checkin":
+                    for reward in d.get("given", []):
+                        conn.execute("DELETE FROM claims WHERE user_id=? AND reward=?", (uid, reward))
+                elif r["action"] == "onsite":
+                    conn.execute("DELETE FROM onsite_uses WHERE id=?", (d.get("use_id"),))
+                elif r["action"] == "friend" and not d.get("was_friend"):
+                    conn.execute("UPDATE users SET is_friend=0 WHERE id=?", (uid,))
+                if d.get("first"):
+                    conn.execute("UPDATE users SET arrived_at=NULL WHERE id=?", (uid,))
+                conn.execute("UPDATE staff_log SET undone_at=? WHERE id=?", (rules.iso(n), r["id"]))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        if why:
+            return err(why, 409)
+        return jsonify({"ok": True, "user": staff_view(rules.get_user(conn, r["user_id"]))})
 
     @app.get("/api/staff/today")
     @need_staff
@@ -575,6 +672,9 @@ def create_app(test_config=None):
             "onsite_buyers": one("SELECT COUNT(DISTINCT user_id) FROM onsite_uses"),
             "onsite_by_day": rows("SELECT day, COUNT(*) n, COUNT(DISTINCT user_id) buyers "
                                   "FROM onsite_uses GROUP BY day ORDER BY day"),
+            "questions_open": one("SELECT COUNT(*) FROM questions WHERE answered_at IS NULL"),
+            "by_staff": rows("SELECT staff, COUNT(*) n, SUM(undone_at IS NOT NULL) undone "
+                             "FROM staff_log GROUP BY staff ORDER BY n DESC"),
             "plans_sent": one("SELECT COUNT(*) FROM users WHERE plan_sent_at IS NOT NULL"),
             "invited": one("SELECT COUNT(*) FROM users WHERE invited_by IS NOT NULL"),
             "invited_new": one("SELECT COUNT(*) FROM users WHERE invited_by IS NOT NULL AND is_new=1"),
@@ -589,18 +689,70 @@ def create_app(test_config=None):
                 "GROUP BY u.id ORDER BY n DESC LIMIT 20"),
         })
 
+    def csv_response(name, head, rows_):
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(head)
+        w.writerows(rows_)
+        return Response("﻿" + buf.getvalue(), mimetype="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename={name}"})
+
     @app.get("/api/admin/questions.csv")
     @need_admin
     def admin_questions():
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["時間", "代碼", "名稱", "距離", "問題"])
-        for r in db().execute(
-                "SELECT q.at, u.code, u.name, u.distance, q.text FROM questions q "
-                "JOIN users u ON u.id=q.user_id ORDER BY q.at"):
-            w.writerow(list(r))
-        return Response("﻿" + buf.getvalue(), mimetype="text/csv",
-                        headers={"Content-Disposition": "attachment; filename=questions.csv"})
+        rs = db().execute(
+            "SELECT q.at, u.code, u.name, u.distance, q.text, "
+            "CASE WHEN q.answered_at IS NULL THEN '' ELSE '已回覆' END, COALESCE(q.answered_at, '') "
+            "FROM questions q JOIN users u ON u.id=q.user_id ORDER BY q.at")
+        return csv_response("questions.csv", ["時間", "代碼", "名稱", "距離", "問題", "狀態", "回覆時間"],
+                            [list(r) for r in rs])
+
+    @app.get("/api/admin/questions")
+    @need_admin
+    def admin_question_list():
+        rs = db().execute(
+            "SELECT q.id, q.at, q.text, q.answered_at, u.code, u.name, u.distance FROM questions q "
+            "JOIN users u ON u.id=q.user_id ORDER BY q.answered_at IS NOT NULL, q.at")
+        return jsonify({"ok": True, "items": [dict(r) for r in rs]})
+
+    @app.post("/api/admin/question")
+    @need_admin
+    def admin_question_mark():
+        """勾選或取消「已在 LINE 回覆」。"""
+        b = body()
+        done = rules.iso(now()) if b.get("answered") else None
+        cur = db().execute("UPDATE questions SET answered_at=? WHERE id=?", (done, b.get("id")))
+        if not cur.rowcount:
+            return err("找不到這則提問", 404)
+        return jsonify({"ok": True})
+
+    @app.get("/api/admin/participants.csv")
+    @need_admin
+    def admin_participants():
+        """每位參加者一列：活動後看誰來了、誰沒來、抽到什麼、買了幾次。不含 LINE 識別碼。"""
+        conn, out = db(), []
+        for u in conn.execute("SELECT * FROM users ORDER BY created_at").fetchall():
+            uid, claims = u["id"], rules.claims_of(conn, u["id"])
+            inviter = rules.get_user(conn, u["invited_by"]) if u["invited_by"] else None
+            one = lambda sql: conn.execute(sql, (uid,)).fetchone()[0]
+            prize = rules.prize_of(conn, uid)
+            out.append([
+                u["code"], u["name"], "是" if u["is_friend"] else "否",
+                "新好友" if u["is_new"] else "原本的好友",
+                content.DIST_NAME.get(u["distance"], ""), u["created_at"][:16].replace("T", " "),
+                inviter["code"] if inviter else "",
+                one("SELECT COUNT(*) FROM users WHERE invited_by=?"),
+                (u["arrived_at"] or "")[:16].replace("T", " "),
+                one("SELECT COUNT(*) FROM quiz WHERE user_id=?"),
+                content.PRIZES[prize]["title"] if prize else "",
+                claims.get("gummy", ""), claims.get("bonus", ""), claims.get("crampeace", ""),
+                one("SELECT COUNT(*) FROM onsite_uses WHERE user_id=?"),
+                one("SELECT COUNT(*) FROM questions WHERE user_id=?"),
+            ])
+        return csv_response("participants.csv", [
+            "代碼", "LINE 名稱", "目前是好友", "好友類型", "距離", "領券時間", "邀請人代碼", "他帶進幾人",
+            "到攤位時間", "答了幾題", "抽到的現場優惠", "軟糖領取日", "加碼軟糖領取日", "勁速補領取日",
+            "現場優惠結帳次數", "提問數"], out)
 
     # ---------- 個資刪除（命令列）----------
 

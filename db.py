@@ -31,8 +31,21 @@ CREATE TABLE IF NOT EXISTS questions (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     text    TEXT NOT NULL,
-    at      TEXT NOT NULL
+    at      TEXT NOT NULL,
+    answered_at TEXT                      -- 已在 LINE 回覆的時間（後台勾選）
 );
+
+-- 攤位人員的操作紀錄：誰、什麼時候、對誰、做了什麼。用來取消按錯的操作，也方便事後查。
+CREATE TABLE IF NOT EXISTS staff_log (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    at        TEXT NOT NULL,
+    staff     TEXT NOT NULL,
+    action    TEXT NOT NULL,              -- checkin / onsite / friend
+    user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    detail    TEXT NOT NULL DEFAULT '{}', -- JSON：這次實際改了什麼，取消時照這個還原
+    undone_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_staff_log_user ON staff_log(user_id);
 
 -- 現場優惠抽獎：主機先洗好一副牌存起來（hand），客人再選位置（pick）。每人一次。
 CREATE TABLE IF NOT EXISTS draws (
