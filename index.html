@@ -189,14 +189,14 @@ const params = new URLSearchParams(location.search);
 
 const DEMO = {cfg: {"liff_id": "", "dev": true, "demo": true, "oa_id": "@201nygdf", "identity": "demo", "friend_check": "oa", "keyword": "任務卡", "has_pending_ref": false, "event": {"name": "馬拉松運動博覽會", "venue": "花博爭艷館", "booth": "105", "hours": "12/17–18 12:00–20:00，12/19 10:00–18:00。圓山捷運站 1 號出口。"}, "plans": {"half": [["賽前 2–3 小時", "吃平常習慣的早餐，以碳水為主"], ["起跑前", "小口補水，不用喝到很撐"], ["賽中", "超過 1 小時的部分，每小時補 30–60 克碳水，分次吃"], ["每個水站", "依天氣小口喝，有流汗就補電解質"], ["賽後", "先補水和碳水，再吃一餐有蛋白質的正餐"]], "full": [["賽前 1–2 天", "飯、麵、麵包吃足，不用暴食"], ["賽前 2–3 小時", "吃平常習慣的早餐，以碳水為主"], ["賽中", "從前 30–45 分鐘就開始補，每小時 30–60 克碳水，不要等餓了才吃"], ["每個水站", "小口喝，電解質跟著補"], ["30K 之後", "吃得下就繼續少量補，換成好入口的形式"], ["賽後", "先補水和碳水，再吃一餐有蛋白質的正餐"]], "cheer": [["出門前", "幫跑者確認補給帶齊：比賽要用的都練習時用過"], ["會合點", "約在 25K–35K 之間，這段最需要有人遞補給"], ["帶什麼", "水、電解質、他平常吃慣的補給，不要臨時換新的"], ["終點", "備好水和一點碳水，先讓他坐下再說"]]}, "quiz_after": "想知道更多，到攤位可以試喝、當面問。", "invite_text": "我領了 PulsarPump 的博覽會補給兌換券，到攤位有軟糖和試喝。你還不是他們的 LINE 好友的話，我們一起去可以再各拿一包勁速補：", "privacy": "領取兌換券時，我們會記錄你的 LINE 顯示名稱與識別碼、選擇的距離、答題與到場紀錄、邀請關係，以及你送出的提問，用於發放贈品與後續的活動通知。想查詢或刪除資料，請來信 service@pulsarpump.com。", "privacy_url": "", "disclaimer": "本產品為食品補充品，不具醫療效用。特殊體質者請先諮詢醫師。", "reviewed": false, "caps": {"2026-12-17": {"gummy": 150, "bonus": 150, "crampeace": 80}, "2026-12-18": {"gummy": 150, "bonus": 150, "crampeace": 80}, "2026-12-19": {"gummy": 300, "bonus": 300, "crampeace": 160}}}, pool: [{"text": "馬拉松後段撞牆，可以靠補給往後延。", "answer": true, "explain": "撞牆通常是肝醣快用完了，是能量問題而不是意志力問題。賽前和賽中的補給安排可以把它往後推。"}, {"text": "抽筋就是因為缺電解質。", "answer": false, "explain": "電解質流失是可能原因之一，但不少研究指向神經肌肉疲勞。這也是為什麼有人補了鹽還是抽筋。"}, {"text": "酸黃瓜汁能緩解抽筋，是因為補充了鹽分。", "answer": false, "explain": "研究裡抽筋緩解的速度，比喝下去再被吸收快得多。學者推測是口腔和喉嚨的感受器引發了神經反射。"}, {"text": "汗流得越多，燃燒的脂肪就越多。", "answer": false, "explain": "流汗是身體在散熱。汗量跟氣溫、濕度、體質有關，和用掉多少脂肪沒有直接關係。"}, {"text": "喝咖啡會讓身體脫水。", "answer": false, "explain": "對平常就有喝咖啡的人來說，適量攝取對體內水分的影響和喝水差不多。"}, {"text": "運動後 30 分鐘內沒補蛋白質，就白練了。", "answer": false, "explain": "補充的時間範圍比「30 分鐘」寬得多。一整天吃夠蛋白質，比搶那半小時重要。"}]};
 const D = {consent: false, distance: null, ans: {}, asked: false, sent: false, partner: false,
-           partnerNew: true, partnerArrived: false, arrived: false, got: {}, eventDay: false, over: false,
+           partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, eventDay: false, over: false,
            ids: [...DEMO.pool.keys()].sort(() => Math.random() - .5).slice(0, 3)};
 function demoState() {
   const quizDone = D.ids.every(i => i in D.ans), qualified = D.partner && D.partnerNew;
   const stock = D.over ? 'ended' : 'ready';
   const absent = D.over && !!D.distance && !D.arrived;
   return {name: '示範', code: 'PUL5R', is_friend: true, is_new: true, consent: D.consent,
-    distance: D.distance, arrived: D.arrived, asked: D.asked, quiz_done: quizDone,
+    distance: D.distance, plan_sent: !!D.distance, arrived: D.arrived, asked: D.asked, quiz_done: quizDone,
     quiz: D.ids.map(i => i in D.ans
       ? {id: i, text: DEMO.pool[i].text, answered: true, correct: D.ans[i] === DEMO.pool[i].answer, truth: DEMO.pool[i].answer, explain: DEMO.pool[i].explain}
       : {id: i, text: DEMO.pool[i].text, answered: false}),
@@ -205,7 +205,7 @@ function demoState() {
       gummy: D.got.gummy ? 'claimed' : !D.distance ? 'locked' : stock,
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
-      onsite: D.got.onsite ? 'used' : !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_text: '全品項 88 折',
+      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, onsite_text: '全品項 88 折',
       absent: absent, absent_code: absent ? 'EV-DEMO-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
@@ -244,7 +244,7 @@ function demoDo(a) {
   }
   if (a === 'pay') {
     if (!D.eventDay) { tip.textContent = '現場優惠券只能在博覽會當天用，先切到博覽會當天。'; return; }
-    D.got.onsite = true; D.arrived = true;
+    D.uses += 1; D.arrived = true;
   }
   if (a === 'over') { D.eventDay = false; D.over = true; }
   S = demoState(); flash = {}; render();
@@ -426,11 +426,10 @@ function onsiteBlock() {
   const r = S.rewards, offer = esc(r.onsite_text || '現場優惠');
   const head = '<div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠券</h3></div>';
   if (r.onsite === 'locked') return '';
-  if (r.onsite === 'used') return `<section class="extra">${head}<div class="coupon used">${offer}<small>已使用</small></div></section>`;
   if (r.onsite === 'ended') return `<section class="extra">${head}<div class="coupon used">${offer}<small>博覽會已結束</small></div></section>`;
   return `<section class="extra">${head}
       <div class="coupon">${offer}<small>${S.today.is_event_day ? '結帳時把這個畫面給工作人員看' : `12/17–12/19 在 ${esc(CFG.event.booth)} 攤位結帳時出示`}</small></div>
-      <p class="note">限博覽會現場使用，每人一次。</p></section>`;
+      <p class="note">限博覽會現場使用，三天都可以用。${r.onsite_uses ? `已使用 ${r.onsite_uses} 次，謝謝你的支持。` : ''}</p></section>`;
 }
 
 function render() {
@@ -480,7 +479,7 @@ function render() {
     <section class="ticket" aria-live="polite">
       <p class="for">${esc(S.name) ? esc(S.name) + '，' : ''}已經幫你保留</p>
       <ul class="items">
-        ${item(`${DIST[S.distance]}補給時間表`, '實體小卡，比賽當天帶著', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
+        ${item(`${DIST[S.distance]}補給時間表`, '現場依你的配速調整', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
         ${item('冰的搖滾話梅 1 杯', '現場試喝', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
         ${item('能量軟糖 2 條', '', r.gummy)}
         ${r.bonus !== 'locked' ? item('加碼：能量軟糖 1 條', '答題加碼', r.bonus) : ''}
@@ -494,6 +493,7 @@ function render() {
       <summary>先看你的${DIST[S.distance]}補給時間表</summary>
       ${plan}
       ${CFG.reviewed ? '' : '<p class="note">內容為草稿，待黎醫師確認。</p>'}
+      ${S.plan_sent ? `<p class="note">這張表也傳到你的 LINE 了。之後在 PulsarPump 聊天室輸入「補給表」，隨時可以再拿一次。</p>` : CFG.identity === 'oa' ? `<p class="note">在 PulsarPump 聊天室輸入「補給表」，就會把這張表傳給你。</p>` : ''}
       <p class="note">到攤位可以請我們依你的配速調整。${S.arrived ? '' : ' <button class="link" data-act="redist">改距離</button>'}</p>
       ${editDistance ? distButtons : ''}
     </details>
