@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS questions (
     at      TEXT NOT NULL
 );
 
+-- 現場優惠抽獎：每人抽一次，結果由主機決定並存在這裡
+CREATE TABLE IF NOT EXISTS draws (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    prize   TEXT NOT NULL,
+    at      TEXT NOT NULL
+);
+
 -- 現場優惠券的使用紀錄：不限次數，只記錄
 CREATE TABLE IF NOT EXISTS onsite_uses (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,

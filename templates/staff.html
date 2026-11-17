@@ -66,12 +66,15 @@ async function today() {
 const DIST = {half: '半馬', full: '全馬', cheer: '陪跑加油'};
 const GIVE = {gummy: '軟糖 2 條', bonus: '加碼軟糖 1 條', crampeace: '勁速補 1 包'};
 const ONSITE = {locked: '還沒領券', ended: '活動已結束'};
+let PRIZES = {}, PRIZE_BASE = '';
+fetch('/api/config').then(r => r.json()).then(c => { PRIZES = c.prizes; PRIZE_BASE = c.prize_base; });
 const ST = {locked: '未達成', waiting_partner: '等隊友到攤位', ready: '可以發', out_today: '今日已送完', ended: '活動已結束', claimed: '已領過'};
 
 function show(u, note) {
   const r = u.rewards;
   const row = (key, name) => `<div class="reward ${r[key] === 'ready' ? 'on' : ''}"><b>${name}</b><span>${ST[r[key]]}</span></div>`;
-  const onsiteLabel = r.onsite === 'ready' ? esc(r.onsite_text || '可以使用') + (r.onsite_uses ? `（已記錄 ${r.onsite_uses} 次）` : '') : ONSITE[r.onsite];
+  const pz = r.prize ? PRIZES[r.prize] : null;
+  const onsiteLabel = r.onsite !== 'ready' ? ONSITE[r.onsite] : !pz ? '還沒抽。請他在券上「現場優惠」選一張牌' : (r.onsite_uses ? `已記錄 ${r.onsite_uses} 次` : '');
   const ready = ['gummy', 'bonus', 'crampeace'].some(k => r[k] === 'ready');
   $('user').hidden = false;
   $('user').innerHTML = `
@@ -88,8 +91,8 @@ function show(u, note) {
     ${note || ''}
     ${row('gummy', '軟糖 2 條')}${row('bonus', '答題加碼 1 條')}${row('crampeace', '揪新朋友：勁速補 1 包')}
     <button class="primary" id="checkin" ${u.arrived && !ready ? 'disabled' : ''}>${u.arrived ? (ready ? '發放加碼並記錄' : '目前沒有可發的') : '報到並發放'}</button>
-    <div class="reward ${r.onsite === 'ready' ? 'on' : ''}"><b>現場優惠券</b><span>${onsiteLabel}</span>
-      ${r.onsite === 'ready' ? '<button id="onsite">客人用優惠結帳了：記錄一筆</button>' : ''}</div>`;
+    <div class="reward ${r.onsite === 'ready' && pz ? 'on' : ''}"><b>現場優惠${pz ? '：' + esc(pz.title) : ''}</b>${pz ? `<span style="color:var(--text)">${esc(pz.staff)}</span><span>${esc(PRIZE_BASE)}</span>` : ''}<span>${onsiteLabel}</span>
+      ${r.onsite === 'ready' && pz ? '<button id="onsite">收到錢了：記錄一筆</button>' : ''}</div>`;
   const fb = $('okFriend');
   if (fb) fb.onclick = async () => {
     fb.disabled = true;

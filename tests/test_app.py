@@ -31,7 +31,7 @@ class Base(unittest.TestCase):
         self.app = create_app({
             "DEV_MODE": True, "DB_PATH": os.path.join(self.tmp.name, "t.db"),
             "STAFF_PIN": "4321", "ADMIN_TOKEN": "adm",
-            "ONSITE_OFFER": "現場折 100", "COUPON_ABSENT": "MISS100",
+            "COUPON_ABSENT": "MISS100",
             "NOW_FN": lambda: self.clock, **self.extra_config,
         })
         self.clients = {}
@@ -233,9 +233,11 @@ class TestCapsAndCoupons(Base):
     def test_onsite_coupon_visible_early_recorded_each_use(self):
         self.assertEqual(self.join("x", distance=None)["rewards"]["onsite"], "locked")
         a = self.join("a")
-        self.assertEqual((a["rewards"]["onsite"], a["rewards"]["onsite_text"]), ("ready", "現場折 100"))
+        self.assertEqual((a["rewards"]["onsite"], a["rewards"]["prize"]), ("ready", None))
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 400)  # 還沒到展期
         self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).get_json()["reason"], "no_prize")
+        self.post("a", "/api/draw")
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)
         self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)  # 不限次數
         s = self.me("a")
@@ -248,6 +250,29 @@ class TestCapsAndCoupons(Base):
         self.join("b")
         self.clock = at("2026-12-20 09:00")
         self.assertEqual(self.me("b")["rewards"]["onsite"], "ended")
+
+    def test_draw_once_server_side(self):
+        self.assertEqual(self.post("x", "/api/draw").status_code, 401)
+        self.join("n", distance=None)
+        self.assertEqual(self.post("n", "/api/draw").status_code, 400)      # 還沒選距離
+        self.join("a")
+        first = self.post("a", "/api/draw").get_json()["state"]["rewards"]["prize"]
+        self.assertIn(first, ("p88", "half", "gift"))
+        for _ in range(5):                                                  # 重抽不會變
+            self.assertEqual(self.post("a", "/api/draw").get_json()["state"]["rewards"]["prize"], first)
+        cfg = self.c("a").get("/api/config").get_json()
+        self.assertNotIn("weights", json.dumps(cfg))                        # 機率不外流
+        self.assertNotIn("60", json.dumps(cfg["prizes"]))
+
+    def test_draw_distribution_roughly_matches_weights(self):
+        conn = __import__("db").connect(self.app.config["DB_PATH"])
+        for i in range(600):
+            conn.execute("INSERT INTO users(id, name, code, created_at) VALUES(?,?,?,?)",
+                         (f"s{i}", "", f"S{i:04d}", "x"))
+            rules.draw_prize(conn, f"s{i}", self.clock)
+        got = dict(conn.execute("SELECT prize, COUNT(*) FROM draws GROUP BY prize").fetchall())
+        self.assertTrue(300 < got["p88"] < 420 and 100 < got["half"] < 200 and 50 < got["gift"] < 140, got)
+
 
     def test_absent_coupon_only_after_event_for_no_shows(self):
         self.join("came"); self.join("missed"); self.join("nofriend", friend=False)

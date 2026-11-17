@@ -19,6 +19,7 @@ cfg = {
     "liff_id": "", "dev": True, "demo": True, "oa_id": "@201nygdf", "identity": "demo",
     "friend_check": "oa", "keyword": "任務卡", "has_pending_ref": False,
     "event": content.EVENT, "plans": content.PLANS, "quiz_after": content.QUIZ_AFTER,
+    "prizes": content.PRIZES, "prize_base": content.PRIZE_BASE,
     "invite_text": content.INVITE_TEXT, "privacy": content.PRIVACY,
     "privacy_url": "", "disclaimer": content.DISCLAIMER, "reviewed": content.REVIEWED_BY_DOCTOR,
     "caps": {d: {r: v[r] for r in rules.PHYSICAL} for d, v in rules.EVENT_DAYS.items()},
@@ -27,7 +28,7 @@ cfg = {
 MOCK = """
 const DEMO = {cfg: %s, pool: %s};
 const D = {consent: false, distance: null, ans: {}, asked: false, sent: false, partner: false,
-           partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, eventDay: false, over: false,
+           partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, prize: null, eventDay: false, over: false,
            ids: [...DEMO.pool.keys()].sort(() => Math.random() - .5).slice(0, 3)};
 function demoState() {
   const quizDone = D.ids.every(i => i in D.ans), qualified = D.partner && D.partnerNew;
@@ -43,7 +44,7 @@ function demoState() {
       gummy: D.got.gummy ? 'claimed' : !D.distance ? 'locked' : stock,
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
-      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, onsite_text: '全品項 88 折',
+      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, prize: D.prize,
       absent: absent, absent_code: absent ? 'EV-DEMO-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
@@ -53,6 +54,8 @@ async function api(path, data) {
   if (path === '/api/consent') D.consent = true;
   if (path === '/api/distance') D.distance = data.distance;
   if (path === '/api/quiz' && !(data.q in D.ans)) D.ans[data.q] = data.answer;
+  // 示範版沒有主機，只好在這裡抽；正式版的結果由主機決定，網頁裡沒有機率
+  if (path === '/api/draw' && !D.prize) { const x = Math.random() * 100; D.prize = x < 60 ? 'p88' : x < 85 ? 'half' : 'gift'; }
   if (path === '/api/ask') { if (!String(data.text || '').trim()) fail('請先寫下你的問題'); D.asked = true; }
   if (path === '/api/ref') fail('示範版沒有其他參加者');
   return {ok: true, state: demoState()};
@@ -82,6 +85,7 @@ function demoDo(a) {
   }
   if (a === 'pay') {
     if (!D.eventDay) { tip.textContent = '現場優惠券只能在博覽會當天用，先切到博覽會當天。'; return; }
+    if (!D.prize) { tip.textContent = '先在券上「現場優惠」選一張牌。'; return; }
     D.uses += 1; D.arrived = true;
   }
   if (a === 'over') { D.eventDay = false; D.over = true; }

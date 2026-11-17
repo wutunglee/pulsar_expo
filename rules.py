@@ -6,9 +6,11 @@
   - 加好友＋選距離 → 兌換券。到攤位報到：實體補給時間表、試喝、軟糖 2 條。
   - 加碼一：答完 3 題真的假的（不論對錯）→ 再 1 條軟糖。
   - 加碼二：揪一位「新加入的好友」，兩人都到攤位 → 各 1 包勁速補。
-  - 現場優惠券領券後就看得到，限博覽會現場結帳使用，不限次數、只記錄；沒來的人活動後看到官網折扣碼。
+  - 現場優惠用抽的（每人一次，主機決定）：兩件以上 88 折／第二件 5 折／93 折加贈勁速補；
+    只買一件保底 93 折。限博覽會現場結帳使用，不限次數、只記錄；沒來的人活動後看到官網折扣碼。
 """
 import hashlib
+import secrets
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -21,6 +23,10 @@ EVENT_DAYS = {
     "2026-12-19": {"open": "10:00", "close": "18:00", "gummy": 300, "bonus": 300, "crampeace": 160},
 }
 PHYSICAL = ("gummy", "bonus", "crampeace")
+
+# 現場優惠抽獎：(代號, 權重)。結果只在主機決定，前端拿不到清單與機率。
+# 文字在 content.PRIZES。保底：只買一件也有 93 折（所有人）。
+PRIZE_WEIGHTS = (("p88", 60), ("half", 25), ("gift", 15))
 QUIZ_SIZE = 3
 DISTANCES = ("half", "full", "cheer")
 
@@ -154,6 +160,26 @@ def crampeace_status(db, u, claims, n):
     return _stock(db, "crampeace", n)
 
 
+def prize_of(db, uid):
+    r = db.execute("SELECT prize FROM draws WHERE user_id=?", (uid,)).fetchone()
+    return r["prize"] if r else None
+
+
+def draw_prize(db, uid, n):
+    """抽一次並存起來；已經抽過就回傳原本的結果，不會重抽。"""
+    got = prize_of(db, uid)
+    if got:
+        return got
+    total = sum(w for _, w in PRIZE_WEIGHTS)
+    pick, acc = secrets.randbelow(total), 0
+    for key, w in PRIZE_WEIGHTS:
+        acc += w
+        if pick < acc:
+            break
+    db.execute("INSERT OR IGNORE INTO draws(user_id, prize, at) VALUES(?,?,?)", (uid, key, iso(n)))
+    return prize_of(db, uid)
+
+
 def onsite_status(u, n):
     """現場優惠券：領券後就看得到，限博覽會現場結帳使用。不限次數，工作人員每次結帳記錄一筆。"""
     if not u["is_friend"] or not u["distance"]:
@@ -204,7 +230,7 @@ def state(db, uid, n, cfg, quiz_pool):
             "onsite": onsite_status(u, n),
             "onsite_uses": db.execute("SELECT COUNT(*) c FROM onsite_uses WHERE user_id=?",
                                       (uid,)).fetchone()["c"],
-            "onsite_text": cfg.get("ONSITE_OFFER", ""),
+            "prize": prize_of(db, uid),
             "absent": absent,
             "absent_code": cfg.get("COUPON_ABSENT", "") if absent else "",
             "absent_text": cfg.get("COUPON_ABSENT_TEXT", ""),

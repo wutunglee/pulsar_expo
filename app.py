@@ -60,7 +60,6 @@ def create_app(test_config=None):
         PUBLIC_URL=env("PUBLIC_URL", "").rstrip("/"),
         STAFF_PIN=env("STAFF_PIN", ""),
         ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
-        ONSITE_OFFER=env("ONSITE_OFFER", "全品項 88 折"),   # 現場優惠券上的文字
         COUPON_ABSENT=env("COUPON_ABSENT", ""),   # 沒到攤位的人，活動後看到的官網折扣碼
         COUPON_ABSENT_TEXT=env("COUPON_ABSENT_TEXT", "滿 2,000 元折 250 元，2027/1/19 前有效"),
         NOW_FN=None,  # 測試時可換成固定時間
@@ -270,6 +269,7 @@ def create_app(test_config=None):
             "has_pending_ref": bool(request.cookies.get("pending_ref")),
             "event": content.EVENT, "plans": content.PLANS,
             "quiz_after": content.QUIZ_AFTER,
+            "prizes": content.PRIZES, "prize_base": content.PRIZE_BASE,
             "invite_text": content.INVITE_TEXT, "privacy": content.PRIVACY,
             "privacy_url": content.PRIVACY_URL, "disclaimer": content.DISCLAIMER,
             "reviewed": content.REVIEWED_BY_DOCTOR,
@@ -412,6 +412,21 @@ def create_app(test_config=None):
                      (uid, q, int(ans), rules.iso(now())))
         return jsonify({"ok": True, "state": me_state()})
 
+    @app.post("/api/draw")
+    @need_user
+    @need_consent
+    def draw():
+        """抽現場優惠。結果在主機決定並存檔，每人一次。"""
+        n, uid = now(), session["uid"]
+        u = rules.get_user(db(), uid)
+        status = rules.onsite_status(u, n)
+        if status == "locked":
+            return err("先加好友、選好距離，才能抽現場優惠")
+        if status == "ended" and not rules.prize_of(db(), uid):
+            return err("博覽會已經結束")
+        rules.draw_prize(db(), uid, n)
+        return jsonify({"ok": True, "state": me_state()})
+
     @app.post("/api/ask")
     @need_user
     @need_consent
@@ -517,6 +532,8 @@ def create_app(test_config=None):
             return err("找不到這個代碼", 404)
         if rules.onsite_status(u, n) != "ready":
             return err("對方還沒加好友或還沒選距離", 409, reason="locked", user=staff_view(u))
+        if not rules.prize_of(conn, u["id"]):
+            return err("他還沒抽現場優惠，請他在券上先抽", 409, reason="no_prize", user=staff_view(u))
         conn.execute("INSERT INTO onsite_uses(user_id, day, at) VALUES(?,?,?)",
                      (u["id"], rules.day_key(n), rules.iso(n)))
         conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
@@ -550,6 +567,7 @@ def create_app(test_config=None):
             "arrived": one("SELECT COUNT(*) FROM users WHERE arrived_at IS NOT NULL"),
             "quiz_done": one("SELECT COUNT(*) FROM (SELECT user_id FROM quiz GROUP BY user_id "
                              "HAVING COUNT(*) >= ?)", min(rules.QUIZ_SIZE, len(content.QUIZ))),
+            "draws": rows("SELECT prize, COUNT(*) n FROM draws GROUP BY prize ORDER BY n DESC"),
             "onsite_uses": one("SELECT COUNT(*) FROM onsite_uses"),
             "onsite_buyers": one("SELECT COUNT(DISTINCT user_id) FROM onsite_uses"),
             "onsite_by_day": rows("SELECT day, COUNT(*) n, COUNT(DISTINCT user_id) buyers "
