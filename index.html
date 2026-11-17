@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>示範｜博覽會補給站兌換券｜PulsarPump 脈衝星</title>
+<title>博覽會補給站兌換券｜PulsarPump 脈衝星</title>
 <meta name="robots" content="noindex">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -163,8 +163,8 @@ footer{font-size:14px;color:var(--muted);padding:18px 10px 0;line-height:1.6}
 </head>
 <body>
 <div class="wrap">
-  <div class="demo"><b>示範版：資料不會儲存，重新整理就歸零</b>
-    先照著下面的兌換券自己做。這些按鈕只用來模擬「別人」和「時間」。
+  <div class="demo" id="demoBar" hidden><b>測試工具（網址有 ?test 才會出現）</b>
+    資料不會儲存，重新整理就歸零。先照著下面的券自己做，這些按鈕用來模擬「別人」和「時間」。
     <div><button onclick="demoDo('landing')">看加好友引導頁</button>
     <button onclick="demoDo('friend')">新朋友接受邀請</button>
     <button onclick="demoDo('oldfriend')">舊好友接受邀請</button>
@@ -196,7 +196,10 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const params = new URLSearchParams(location.search);
 
 
-const DEMO = {cfg: {"liff_id": "", "dev": true, "demo": true, "oa_id": "@201nygdf", "identity": "demo", "friend_check": "oa", "keyword": "任務卡", "has_pending_ref": false, "event": {"name": "馬拉松運動博覽會", "venue": "花博爭艷館", "booth": "105", "facts": [["博覽會", "馬拉松運動博覽會"], ["時間", "12/17（四）12:00–20:00\n12/18（五）12:00–20:00\n12/19（六）10:00–18:00"], ["地點", "花博爭艷館\n圓山捷運站 1 號出口"], ["攤位", "105"]]}, "plans": {"half": [["賽前 2–3 小時", "吃平常習慣的早餐，以碳水為主"], ["起跑前", "小口補水，不用喝到很撐"], ["賽中", "超過 1 小時的部分，每小時補 30–60 克碳水，分次吃"], ["每個水站", "依天氣小口喝，有流汗就補電解質"], ["賽後", "先補水和碳水，再吃一餐有蛋白質的正餐"]], "full": [["賽前 1–2 天", "飯、麵、麵包吃足，不用暴食"], ["賽前 2–3 小時", "吃平常習慣的早餐，以碳水為主"], ["賽中", "從前 30–45 分鐘就開始補，每小時 30–60 克碳水，不要等餓了才吃"], ["每個水站", "小口喝，電解質跟著補"], ["30K 之後", "吃得下就繼續少量補，換成好入口的形式"], ["賽後", "先補水和碳水，再吃一餐有蛋白質的正餐"]], "cheer": [["出門前", "幫跑者確認補給帶齊：比賽要用的都練習時用過"], ["會合點", "約在 25K–35K 之間，這段最需要有人遞補給"], ["帶什麼", "水、電解質、他平常吃慣的補給，不要臨時換新的"], ["終點", "備好水和一點碳水，先讓他坐下再說"]]}, "quiz_after": "想知道更多，到攤位可以試喝、當面問。", "prizes": {"p88": {"short": "兩件\n88 折", "title": "任選兩件以上，全部 88 折", "detail": "買越多省越多，三天都能用。", "staff": "兩件以上：每件看「88 折」欄相加。只買一件：看「93 折」欄。"}, "half": {"short": "第二件\n5 折", "title": "第二件 5 折", "detail": "買兩件以上，價格較低的那一件半價。三天都能用。", "staff": "兩件以上：最便宜的一件看「半價」欄，其餘原價（一筆一件）。只買一件：看「93 折」欄。"}, "gift": {"short": "93 折\n＋贈品", "title": "全部 93 折，再送勁速補 1 包", "detail": "不限件數都是 93 折，每次結帳加贈 1 包。三天都能用。", "staff": "每件看「93 折」欄相加，另外給勁速補 1 包。"}}, "prize_base": "只買一件也有 93 折。勁速補現場價每盒 601 元，不再折扣。", "invite_text": "我領了 PulsarPump 的博覽會補給兌換券，到攤位有軟糖和試喝。你還不是他們的 LINE 好友的話，我們一起去可以再各拿一包勁速補：", "privacy": "領取兌換券時，我們會記錄你的 LINE 顯示名稱與識別碼、選擇的距離、答題與到場紀錄、邀請關係，以及你送出的提問，用於發放贈品與後續的活動通知。想查詢或刪除資料，請來信 service@pulsarpump.com。", "privacy_url": "", "disclaimer": "本產品為食品補充品，不具醫療效用。特殊體質者請先諮詢醫師。", "reviewed": false, "caps": {"2026-12-17": {"gummy": 150, "bonus": 150, "crampeace": 80}, "2026-12-18": {"gummy": 150, "bonus": 150, "crampeace": 80}, "2026-12-19": {"gummy": 300, "bonus": 300, "crampeace": 160}}}, pool: [{"text": "馬拉松後段撞牆，可以靠補給往後延。", "answer": true, "explain": "撞牆通常是肝醣快用完了，是能量問題而不是意志力問題。賽前和賽中的補給安排可以把它往後推。"}, {"text": "抽筋就是因為缺電解質。", "answer": false, "explain": "電解質流失是可能原因之一，但不少研究指向神經肌肉疲勞。這也是為什麼有人補了鹽還是抽筋。"}, {"text": "酸黃瓜汁能緩解抽筋，是因為補充了鹽分。", "answer": false, "explain": "研究裡抽筋緩解的速度，比喝下去再被吸收快得多。學者推測是口腔和喉嚨的感受器引發了神經反射。"}, {"text": "汗流得越多，燃燒的脂肪就越多。", "answer": false, "explain": "流汗是身體在散熱。汗量跟氣溫、濕度、體質有關，和用掉多少脂肪沒有直接關係。"}, {"text": "喝咖啡會讓身體脫水。", "answer": false, "explain": "對平常就有喝咖啡的人來說，適量攝取對體內水分的影響和喝水差不多。"}, {"text": "運動後 30 分鐘內沒補蛋白質，就白練了。", "answer": false, "explain": "補充的時間範圍比「30 分鐘」寬得多。一整天吃夠蛋白質，比搶那半小時重要。"}]};
+const TOOLS = new URLSearchParams(location.search).has('test');
+const DEMO = {cfg: {"liff_id": "", "dev": false, "demo": true, "oa_id": "@201nygdf", "identity": "oa", "friend_check": "oa", "keyword": "任務卡", "has_pending_ref": false, "event": {"name": "馬拉松運動博覽會", "venue": "花博爭艷館", "booth": "105", "facts": [["博覽會", "馬拉松運動博覽會"], ["時間", "12/17（四）12:00–20:00\n12/18（五）12:00–20:00\n12/19（六）10:00–18:00"], ["地點", "花博爭艷館\n圓山捷運站 1 號出口"], ["攤位", "105"]]}, "plans": {"half": [["賽前 2–3 小時", "吃平常習慣的早餐，以碳水為主"], ["起跑前", "小口補水，不用喝到很撐"], ["賽中", "超過 1 小時的部分，每小時補 30–60 克碳水，分次吃"], ["每個水站", "依天氣小口喝，有流汗就補電解質"], ["賽後", "先補水和碳水，再吃一餐有蛋白質的正餐"]], "full": [["賽前 1–2 天", "飯、麵、麵包吃足，不用暴食"], ["賽前 2–3 小時", "吃平常習慣的早餐，以碳水為主"], ["賽中", "從前 30–45 分鐘就開始補，每小時 30–60 克碳水，不要等餓了才吃"], ["每個水站", "小口喝，電解質跟著補"], ["30K 之後", "吃得下就繼續少量補，換成好入口的形式"], ["賽後", "先補水和碳水，再吃一餐有蛋白質的正餐"]], "cheer": [["出門前", "幫跑者確認補給帶齊：比賽要用的都練習時用過"], ["會合點", "約在 25K–35K 之間，這段最需要有人遞補給"], ["帶什麼", "水、電解質、他平常吃慣的補給，不要臨時換新的"], ["終點", "備好水和一點碳水，先讓他坐下再說"]]}, "quiz_after": "想知道更多，到攤位可以試喝、當面問。", "prizes": {"p88": {"short": "兩件\n88 折", "title": "任選兩件以上，全部 88 折", "detail": "買越多省越多，三天都能用。", "staff": "兩件以上：每件看「88 折」欄相加。只買一件：看「93 折」欄。"}, "half": {"short": "第二件\n5 折", "title": "第二件 5 折", "detail": "買兩件以上，價格較低的那一件半價。三天都能用。", "staff": "兩件以上：最便宜的一件看「半價」欄，其餘原價（一筆一件）。只買一件：看「93 折」欄。"}, "gift": {"short": "93 折\n＋贈品", "title": "全部 93 折，再送勁速補 1 包", "detail": "不限件數都是 93 折，每次結帳加贈 1 包。三天都能用。", "staff": "每件看「93 折」欄相加，另外給勁速補 1 包。"}}, "prize_base": "只買一件也有 93 折。勁速補現場價每盒 601 元，不再折扣。", "invite_text": "我領了 PulsarPump 的博覽會補給兌換券，到攤位有軟糖和試喝。你還不是他們的 LINE 好友的話，我們一起去可以再各拿一包勁速補：", "privacy": "領取兌換券時，我們會記錄你的 LINE 顯示名稱與識別碼、選擇的距離、答題與到場紀錄、邀請關係，以及你送出的提問，用於發放贈品與後續的活動通知。想查詢或刪除資料，請來信 service@pulsarpump.com。", "privacy_url": "", "disclaimer": "本產品為食品補充品，不具醫療效用。特殊體質者請先諮詢醫師。", "reviewed": false, "caps": {"2026-12-17": {"gummy": 150, "bonus": 150, "crampeace": 80}, "2026-12-18": {"gummy": 150, "bonus": 150, "crampeace": 80}, "2026-12-19": {"gummy": 300, "bonus": 300, "crampeace": 160}}}, pool: [{"text": "馬拉松後段撞牆，可以靠補給往後延。", "answer": true, "explain": "撞牆通常是肝醣快用完了，是能量問題而不是意志力問題。賽前和賽中的補給安排可以把它往後推。"}, {"text": "抽筋就是因為缺電解質。", "answer": false, "explain": "電解質流失是可能原因之一，但不少研究指向神經肌肉疲勞。這也是為什麼有人補了鹽還是抽筋。"}, {"text": "酸黃瓜汁能緩解抽筋，是因為補充了鹽分。", "answer": false, "explain": "研究裡抽筋緩解的速度，比喝下去再被吸收快得多。學者推測是口腔和喉嚨的感受器引發了神經反射。"}, {"text": "汗流得越多，燃燒的脂肪就越多。", "answer": false, "explain": "流汗是身體在散熱。汗量跟氣溫、濕度、體質有關，和用掉多少脂肪沒有直接關係。"}, {"text": "喝咖啡會讓身體脫水。", "answer": false, "explain": "對平常就有喝咖啡的人來說，適量攝取對體內水分的影響和喝水差不多。"}, {"text": "運動後 30 分鐘內沒補蛋白質，就白練了。", "answer": false, "explain": "補充的時間範圍比「30 分鐘」寬得多。一整天吃夠蛋白質，比搶那半小時重要。"}]};
+if (!TOOLS) DEMO.cfg.reviewed = true;      // 試用畫面不顯示草稿標示
+let JOINED = false;
 const D = {consent: false, distance: null, ans: {}, asked: false, sent: false, partner: false,
            partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, prize: null, pick: null, hand: null, eventDay: false, over: false,
            ids: [...DEMO.pool.keys()].sort(() => Math.random() - .5).slice(0, 3)};
@@ -204,7 +207,7 @@ function demoState() {
   const quizDone = D.ids.every(i => i in D.ans), qualified = D.partner && D.partnerNew;
   const stock = D.over ? 'ended' : 'ready';
   const absent = D.over && !!D.distance && !D.arrived;
-  return {name: '示範', code: 'PUL5R', is_friend: true, is_new: true, consent: D.consent,
+  return {name: '', code: 'PUL5R', is_friend: true, is_new: true, consent: D.consent,
     distance: D.distance, plan_sent: !!D.distance, arrived: D.arrived, asked: D.asked, quiz_done: quizDone,
     quiz: D.ids.map(i => i in D.ans
       ? {id: i, text: DEMO.pool[i].text, answered: true, correct: D.ans[i] === DEMO.pool[i].answer, truth: DEMO.pool[i].answer, explain: DEMO.pool[i].explain}
@@ -215,12 +218,13 @@ function demoState() {
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
       onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, cards: D.hand ? D.hand.length : 0, prize: D.prize, ...(D.prize ? {pick: D.pick, hand: D.hand} : {}),
-      absent: absent, absent_code: absent ? 'EV-DEMO-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
+      absent: absent, absent_code: absent ? 'EV-TPEMARA-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
 async function api(path, data) {
   const fail = m => { const e = new Error(m); e.status = 400; throw e; };
   if (path === '/api/config') return DEMO.cfg;
+  if (!JOINED) { const e = new Error('尚未加入'); e.status = 401; throw e; }
   if (path === '/api/consent') D.consent = true;
   if (path === '/api/distance') {
     D.distance = data.distance;
@@ -228,17 +232,17 @@ async function api(path, data) {
     if (!D.hand) D.hand = ["p88", "p88", "p88", "p88", "gift", "gift", "gift", "half"].map(v => [Math.random(), v]).sort((a, b) => a[0] - b[0]).map(v => v[1]);
   }
   if (path === '/api/quiz' && !(data.q in D.ans)) D.ans[data.q] = data.answer;
-  // 示範版沒有主機，牌只好洗在網頁裡；正式版的牌存在主機，選之前網頁拿不到
+  // 這一版沒有主機，牌只好洗在網頁裡；正式版的牌存在主機，選之前網頁拿不到
   if (path === '/api/draw' && !D.prize && D.hand) { D.pick = data.pick; D.prize = D.hand[data.pick]; }
   if (path === '/api/ask') { if (!String(data.text || '').trim()) fail('請先寫下你的問題'); D.asked = true; }
-  if (path === '/api/ref') fail('示範版沒有其他參加者');
+  if (path === '/api/ref') fail('代碼不對，請再向朋友確認一次');
   return {ok: true, state: demoState()};
 }
 function demoDo(a) {
   const tip = document.getElementById('demoTip');
   tip.textContent = '';
   if (a === 'reset') { location.reload(); return; }
-  if (a === 'landing') { landing(); return; }
+  if (a === 'landing') { JOINED = false; landing(); return; }
   if (!S || !S.distance) { tip.textContent = '先在下面的兌換券按「同意並開始」、選距離。'; return; }
   if (a === 'friend' || a === 'oldfriend') {
     if (!D.sent) { tip.textContent = '先在「加碼二」按「傳邀請給跑友」，再按這個按鈕。'; return; }
@@ -265,6 +269,15 @@ function demoDo(a) {
   if (a === 'over') { D.eventDay = false; D.over = true; }
   S = demoState(); flash = {}; render();
 }
+// 試用版沒有真的 LINE：按「加入好友」就當作已加入，直接進到兌換券
+document.addEventListener('click', e => {
+  const a = e.target.closest('a.btn.primary');
+  if (!a || JOINED) return;
+  e.preventDefault();
+  JOINED = true;
+  openSession().then(ok => { if (ok) render(); });
+});
+if (TOOLS) document.getElementById('demoBar').hidden = false;
 
 function loadScript(src) {
   return new Promise((res, rej) => {
