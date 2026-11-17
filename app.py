@@ -32,16 +32,6 @@ def load_dotenv(path):
                 os.environ.setdefault(k.strip(), v.strip())
 
 
-def parse_codes(raw):
-    out = {}
-    for part in raw.split(","):
-        if ":" in part:
-            day, code = part.split(":", 1)
-            if code.strip():
-                out[day.strip()] = code.strip().upper()
-    return out
-
-
 def err(msg, status=400, **extra):
     return jsonify({"ok": False, "error": msg, **extra}), status
 
@@ -67,9 +57,8 @@ def create_app(test_config=None):
         PUBLIC_URL=env("PUBLIC_URL", "").rstrip("/"),
         STAFF_PIN=env("STAFF_PIN", ""),
         ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
-        DAY_CODES=parse_codes(env("DAY_CODES", "")),
-        COUPON_5=env("COUPON_5", ""),
-        COUPON_FALLBACK=env("COUPON_FALLBACK", ""),
+        ONSITE_OFFER=env("ONSITE_OFFER", ""),     # 現場優惠券上的文字，例如「現場消費折 100 元」
+        COUPON_ABSENT=env("COUPON_ABSENT", ""),   # 沒到攤位的人，活動後看到的官網折扣碼
         NOW_FN=None,  # 測試時可換成固定時間
         PERMANENT_SESSION_LIFETIME=timedelta(days=60),
         SESSION_COOKIE_HTTPONLY=True,
@@ -109,10 +98,7 @@ def create_app(test_config=None):
             conn.close()
 
     def me_state():
-        s = rules.state(db(), session["uid"], now(), app.config)
-        if s["stations"]["2"]:  # 答過才給解說，重新開啟時也看得到
-            s["myth_explain"] = content.MYTH["explain"]
-        return s
+        return rules.state(db(), session["uid"], now(), app.config, content.QUIZ)
 
     def need_user(fn):
         @wraps(fn)
@@ -172,8 +158,9 @@ def create_app(test_config=None):
     def body():
         return request.get_json(silent=True) or {}
 
-    def upsert_user(uid, name, friend=None):
-        """建立或更新參加者。friend=None 表示這次不動好友狀態。"""
+    def upsert_user(uid, name, friend=None, is_new=False):
+        """建立或更新參加者。friend=None 表示這次不動好友狀態。
+        is_new 只在第一次建立時寫入：活動期間才加入的好友為 True。"""
         conn = db()
         if rules.get_user(conn, uid):
             if name:
@@ -182,8 +169,10 @@ def create_app(test_config=None):
                 conn.execute("UPDATE users SET is_friend=? WHERE id=?", (int(friend), uid))
         else:
             conn.execute(
-                "INSERT INTO users(id, name, code, is_friend, created_at) VALUES(?,?,?,?,?)",
-                (uid, name[:60], new_code(), int(bool(friend)), rules.iso(now())))
+                "INSERT INTO users(id, name, code, is_friend, is_new, created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (uid, name[:60], new_code(), int(bool(friend)), int(bool(is_new)),
+                 rules.iso(now())))
 
     def set_inviter(uid, code):
         """回傳是否成功設定邀請人。"""
@@ -229,8 +218,7 @@ def create_app(test_config=None):
             return redirect("/")
         login(uid)
         resp = redirect("/")
-        if set_inviter(uid, request.cookies.get("pending_ref")):
-            rules.settle_team(db(), uid, now())
+        set_inviter(uid, request.cookies.get("pending_ref"))
         resp.delete_cookie("pending_ref")
         return resp
 
@@ -262,20 +250,20 @@ def create_app(test_config=None):
             "keyword": c["LINE_KEYWORD"],
             "has_pending_ref": bool(request.cookies.get("pending_ref")),
             "event": content.EVENT, "plans": content.PLANS,
-            "myth": {"question": content.MYTH["question"]},
+            "quiz_after": content.QUIZ_AFTER,
             "invite_text": content.INVITE_TEXT, "privacy": content.PRIVACY,
             "privacy_url": content.PRIVACY_URL, "disclaimer": content.DISCLAIMER,
             "reviewed": content.REVIEWED_BY_DOCTOR,
-            "caps": {d: {"gummy": v["gummy"], "crampeace": v["crampeace"]}
-                     for d, v in rules.EVENT_DAYS.items()},
+            "caps": {d: {r: v[r] for r in rules.PHYSICAL} for d, v in rules.EVENT_DAYS.items()},
         })
 
     @app.post("/api/session")
     def api_session():
-        b, c, n = body(), app.config, now()
+        b, c = body(), app.config
         if c["DEV_MODE"] and b.get("dev_user"):
             uid = "dev:" + str(b["dev_user"])[:30]
             name, friend = str(b["dev_user"])[:30], bool(b.get("dev_friend"))
+            is_new = bool(b.get("dev_new", True))
         elif c["IDENTITY"] != "liff":
             return err("請從 LINE 官方帳號傳給你的連結開啟任務卡", 401)
         else:
@@ -288,9 +276,9 @@ def create_app(test_config=None):
                           if c["FRIEND_CHECK"] == "line" else None)
             except line_api.LineError as e:
                 return err(f"LINE 登入失敗：{e}", 401)
-        upsert_user(uid, name, friend)
+            is_new = friend is False   # 第一次開券時還不是好友，才算新好友
+        upsert_user(uid, name, friend, is_new)
         set_inviter(uid, b.get("ref"))
-        rules.settle_team(db(), uid, n)
         login(uid)
         return jsonify({"ok": True, "state": me_state()})
 
@@ -303,7 +291,6 @@ def create_app(test_config=None):
             return err("你已經有隊友了")
         if not set_inviter(uid, body().get("code")):
             return err("邀請碼不對，請再向朋友確認一次")
-        rules.settle_team(db(), uid, now())
         return jsonify({"ok": True, "state": me_state()})
 
     # ---------- LINE 官方帳號 webhook ----------
@@ -329,7 +316,7 @@ def create_app(test_config=None):
         return jsonify({"ok": True})
 
     def handle_event(ev):
-        c, n = app.config, now()
+        c = app.config
         src = ev.get("source") or {}
         uid = src.get("userId")
         if src.get("type") != "user" or not uid:
@@ -349,10 +336,10 @@ def create_app(test_config=None):
             token = line_api.channel_token(c["LINE_CHANNEL_ID"], c["LINE_CHANNEL_SECRET"])
         except line_api.LineError:
             app.logger.warning("拿不到 channel access token，這次無法回覆")
-        is_new = not rules.get_user(db(), uid)
-        name = line_api.get_profile(token, uid) if token and is_new else ""
-        upsert_user(uid, name, True)
-        rules.settle_team(db(), uid, n)
+        first = not rules.get_user(db(), uid)
+        name = line_api.get_profile(token, uid) if token and first else ""
+        # 加好友事件進來的是新好友；輸入關鍵字的是原本就在的好友
+        upsert_user(uid, name, True, is_new=(kind == "follow"))
         if token and ev.get("replyToken"):
             try:
                 line_api.reply(token, ev["replyToken"],
@@ -372,91 +359,40 @@ def create_app(test_config=None):
                      (rules.iso(now()), session["uid"]))
         return jsonify({"ok": True, "state": me_state()})
 
-    @app.post("/api/station/1")
+    @app.post("/api/distance")
     @need_user
     @need_consent
-    def station1():
+    def set_distance():
         dist = body().get("distance")
         if dist not in rules.DISTANCES:
             return err("請選擇距離")
-        conn, uid, n = db(), session["uid"], now()
-        conn.execute("UPDATE users SET distance=? WHERE id=?", (dist, uid))
-        rules.complete(conn, uid, 1, n, dist)
-        rules.settle_team(conn, uid, n)
+        db().execute("UPDATE users SET distance=? WHERE id=?", (dist, session["uid"]))
         return jsonify({"ok": True, "state": me_state()})
 
-    @app.post("/api/station/2")
+    @app.post("/api/quiz")
     @need_user
     @need_consent
-    def station2():
-        ans = body().get("answer")
-        if not isinstance(ans, bool):
+    def answer_quiz():
+        b, uid = body(), session["uid"]
+        q, ans = b.get("q"), b.get("answer")
+        if q not in rules.quiz_ids(uid, len(content.QUIZ)) or not isinstance(ans, bool):
             return err("請選擇答案")
-        rules.complete(db(), session["uid"], 2, now(), str(ans))
-        return jsonify({"ok": True, "state": me_state(),
-                        "correct": ans == content.MYTH["answer"],
-                        "explain": content.MYTH["explain"]})
-
-    @app.post("/api/station/4")
-    @need_user
-    @need_consent
-    def station4():
-        conn, uid, n = db(), session["uid"], now()
-        day = rules.day_key(n)
-        if not rules.event_day(n):
-            return err("通關碼只在博覽會期間（12/17–12/19）有效")
-        expected = app.config["DAY_CODES"].get(day)
-        if not expected:
-            return err("今天的通關碼尚未設定，請洽攤位人員", 503)
-        row = conn.execute("SELECT n FROM code_attempts WHERE user_id=? AND day=?",
-                           (uid, day)).fetchone()
-        if row and row["n"] >= rules.MAX_CODE_ATTEMPTS:
-            return err("今天嘗試次數已滿，請請攤位人員幫你完成這一站", 429)
-        given = str(body().get("code") or "").strip().upper()
-        if not given:
-            return err("請輸入攤位人員給你的通關碼")
-        if not hmac.compare_digest(given.encode(), expected.encode()):
-            conn.execute(
-                "INSERT INTO code_attempts(user_id, day, n) VALUES(?,?,1) "
-                "ON CONFLICT(user_id, day) DO UPDATE SET n=n+1", (uid, day))
-            return err("通關碼不對，請再向攤位人員確認一次")
-        rules.complete(conn, uid, 4, n, "code")
+        # 第一次的答案算數，重送不會改
+        db().execute("INSERT OR IGNORE INTO quiz(user_id, q, answer, at) VALUES(?,?,?,?)",
+                     (uid, q, int(ans), rules.iso(now())))
         return jsonify({"ok": True, "state": me_state()})
 
-    @app.post("/api/station/5")
+    @app.post("/api/ask")
     @need_user
     @need_consent
-    def station5():
+    def ask():
         text = str(body().get("text") or "").strip()
         if not text:
             return err("請先寫下你的問題")
         if len(text) > 200:
             return err("問題請在 200 字以內")
-        conn, uid, n = db(), session["uid"], now()
-        conn.execute("INSERT INTO questions(user_id, text, at) VALUES(?,?,?)",
-                     (uid, text, rules.iso(n)))
-        rules.complete(conn, uid, 5, n, "online")
-        return jsonify({"ok": True, "state": me_state()})
-
-    @app.post("/api/reward/fallback")
-    @need_user
-    @need_consent
-    def take_fallback():
-        conn, uid, n = db(), session["uid"], now()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            u = rules.get_user(conn, uid)
-            status = rules.fallback_status(conn, u, rules.stations_done(conn, uid),
-                                           rules.claims_of(conn, uid), n)
-            if status == "available":
-                conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
-                             (uid, "fallback", rules.day_key(n), rules.iso(n)))
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-        if status != "available":
-            return err("目前不能改領折扣券")
+        db().execute("INSERT INTO questions(user_id, text, at) VALUES(?,?,?)",
+                     (session["uid"], text, rules.iso(now())))
         return jsonify({"ok": True, "state": me_state()})
 
     # ---------- 攤位人員 ----------
@@ -466,11 +402,11 @@ def create_app(test_config=None):
                             (str(code or "").strip().upper(),)).fetchone()
 
     def staff_view(u):
-        s = rules.state(db(), u["id"], now(), app.config)
+        u = rules.get_user(db(), u["id"])
+        s = me = rules.state(db(), u["id"], now(), app.config, content.QUIZ)
         return {"name": u["name"], "code": u["code"], "is_friend": s["is_friend"],
-                "count": s["count"], "stations": s["stations"],
-                "gummy": s["rewards"]["gummy"], "crampeace": s["rewards"]["crampeace"],
-                "today": s["today"]}
+                "is_new": s["is_new"], "distance": u["distance"], "arrived": s["arrived"],
+                "quiz_done": me["quiz_done"], "rewards": s["rewards"], "today": s["today"]}
 
     @app.post("/api/staff/lookup")
     @need_staff
@@ -478,23 +414,6 @@ def create_app(test_config=None):
         u = by_code(body().get("code"))
         if not u:
             return err("找不到這個代碼", 404)
-        return jsonify({"ok": True, "user": staff_view(u)})
-
-    @app.post("/api/staff/mark")
-    @need_staff
-    def staff_mark():
-        """參加者無法自己輸入通關碼，或在現場口頭提問時，由人員代為完成第 4、5 站。"""
-        b, n = body(), now()
-        u = by_code(b.get("code"))
-        if not u:
-            return err("找不到這個代碼", 404)
-        if b.get("station") not in (4, 5):
-            return err("只能代為完成第 4 或第 5 站")
-        if not rules.event_day(n):
-            return err("只能在博覽會期間操作")
-        if not u["consent_at"]:
-            return err("對方尚未同意資料使用說明，請他先在任務卡上按同意")
-        rules.complete(db(), u["id"], b["station"], n, "staff")
         return jsonify({"ok": True, "user": staff_view(u)})
 
     @app.post("/api/staff/friend")
@@ -507,35 +426,76 @@ def create_app(test_config=None):
         if not u:
             return err("找不到這個代碼", 404)
         db().execute("UPDATE users SET is_friend=1 WHERE id=?", (u["id"],))
-        rules.settle_team(db(), u["id"], now())
-        return jsonify({"ok": True, "user": staff_view(by_code(u["code"]))})
+        return jsonify({"ok": True, "user": staff_view(u)})
 
-    @app.post("/api/staff/claim")
+    @app.post("/api/staff/checkin")
     @need_staff
-    def staff_claim():
-        b, n, conn = body(), now(), db()
-        reward = b.get("reward")
-        if reward not in ("gummy", "crampeace"):
-            return err("獎勵種類不正確")
+    def staff_checkin():
+        """到攤位報到。記下到場，並把此刻可以領的實體贈品一次發完。
+        答題加碼、勁速補若晚一點才達成，再查一次、再按一次即可，不會重複發。"""
+        n, conn = now(), db()
         if not rules.event_day(n):
-            return err("只能在博覽會期間發放")
-        u = by_code(b.get("code"))
+            return err("只能在博覽會期間報到")
+        u = by_code(body().get("code"))
+        if not u:
+            return err("找不到這個代碼", 404)
+        if not u["is_friend"]:
+            return err("對方還不是好友，請他先加入", 409, reason="not_friend", user=staff_view(u))
+        if not u["distance"]:
+            return err("請他先在兌換券上選距離", 409, reason="no_distance", user=staff_view(u))
+        given = []
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
+                         (rules.iso(n), u["id"]))
+            u = rules.get_user(conn, u["id"])
+            claims = rules.claims_of(conn, u["id"])
+            status = {
+                "gummy": rules.gummy_status(conn, u, claims, n),
+                "bonus": rules.bonus_status(conn, u, claims, n, len(content.QUIZ)),
+                "crampeace": rules.crampeace_status(conn, u, claims, n),
+            }
+            for reward in rules.PHYSICAL:
+                if status[reward] == "ready":
+                    conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
+                                 (u["id"], reward, rules.day_key(n), rules.iso(n)))
+                    given.append(reward)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        # 這個人到了以後，隊友的勁速補可能也跟著可以領：提示工作人員
+        mates = []
+        ids = [r["id"] for r in conn.execute("SELECT id FROM users WHERE invited_by=?", (u["id"],))]
+        if u["invited_by"]:
+            ids.append(u["invited_by"])
+        for pid in ids:
+            p = rules.get_user(conn, pid)
+            if rules.crampeace_status(conn, p, rules.claims_of(conn, pid), n) == "ready":
+                mates.append({"name": p["name"], "code": p["code"]})
+        return jsonify({"ok": True, "given": given, "mates_ready": mates, "user": staff_view(u)})
+
+    @app.post("/api/staff/onsite")
+    @need_staff
+    def staff_onsite():
+        """結帳時使用現場優惠券。每人一次。"""
+        n, conn = now(), db()
+        u = by_code(body().get("code"))
         if not u:
             return err("找不到這個代碼", 404)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            done, claims = rules.stations_done(conn, u["id"]), rules.claims_of(conn, u["id"])
-            fn = rules.gummy_status if reward == "gummy" else rules.crampeace_status
-            status = fn(conn, u, done, claims, n)
+            status = rules.onsite_status(u, rules.claims_of(conn, u["id"]))
             if status == "ready":
                 conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
-                             (u["id"], reward, rules.day_key(n), rules.iso(n)))
+                             (u["id"], "onsite", rules.day_key(n), rules.iso(n)))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
         if status != "ready":
-            return err("目前不能發放", 409, reason=status, user=staff_view(u))
+            return err("已經用過了" if status == "used" else "要先報到才能使用現場優惠",
+                       409, reason=status, user=staff_view(u))
         return jsonify({"ok": True, "user": staff_view(u)})
 
     @app.get("/api/staff/today")
@@ -544,7 +504,7 @@ def create_app(test_config=None):
         n, d = now(), rules.event_day(now())
         out = {"day": rules.day_key(n), "is_event_day": bool(d),
                "friend_check": app.config["FRIEND_CHECK"]}
-        for r in ("gummy", "crampeace"):
+        for r in rules.PHYSICAL:
             out[r] = {"cap": d[r] if d else 0, "left": rules.left_today(db(), r, n)}
         return jsonify({"ok": True, **out})
 
@@ -560,10 +520,16 @@ def create_app(test_config=None):
             "ok": True,
             "users": one("SELECT COUNT(*) FROM users"),
             "friends": one("SELECT COUNT(*) FROM users WHERE is_friend=1"),
-            "consented": one("SELECT COUNT(*) FROM users WHERE consent_at IS NOT NULL"),
+            "new_friends": one("SELECT COUNT(*) FROM users WHERE is_friend=1 AND is_new=1"),
+            "reserved": one("SELECT COUNT(*) FROM users WHERE distance IS NOT NULL"),
+            "arrived": one("SELECT COUNT(*) FROM users WHERE arrived_at IS NOT NULL"),
+            "quiz_done": one("SELECT COUNT(*) FROM (SELECT user_id FROM quiz GROUP BY user_id "
+                             "HAVING COUNT(*) >= ?)", min(rules.QUIZ_SIZE, len(content.QUIZ))),
             "invited": one("SELECT COUNT(*) FROM users WHERE invited_by IS NOT NULL"),
+            "invited_new": one("SELECT COUNT(*) FROM users WHERE invited_by IS NOT NULL AND is_new=1"),
             "questions": one("SELECT COUNT(*) FROM questions"),
-            "by_station": rows("SELECT station, COUNT(*) n FROM completions GROUP BY station ORDER BY station"),
+            "arrived_by_day": rows("SELECT substr(arrived_at,1,10) day, COUNT(*) n FROM users "
+                                   "WHERE arrived_at IS NOT NULL GROUP BY day ORDER BY day"),
             "by_distance": rows("SELECT distance, COUNT(*) n FROM users WHERE distance IS NOT NULL GROUP BY distance"),
             "new_by_day": rows("SELECT substr(created_at,1,10) day, COUNT(*) n FROM users GROUP BY day ORDER BY day"),
             "claims": rows("SELECT day, reward, COUNT(*) n FROM claims GROUP BY day, reward ORDER BY day, reward"),

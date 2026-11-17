@@ -1,6 +1,6 @@
-// 任務卡前端。狀態一律以伺服器回傳為準，畫面只負責呈現。
-let CFG = null, S = null, flash = {}, seen = null;
-const STAMP = {1: '距離', 2: '迷思', 3: '跑友', 4: '試喝', 5: '提問'};
+// 兌換券前端。狀態一律以伺服器回傳為準，畫面只負責呈現。
+let CFG = null, S = null, flash = {}, editDistance = false;
+const DIST = {half: '半馬', full: '全馬', cheer: '陪跑加油'};
 const app = document.getElementById('app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const params = new URLSearchParams(location.search);
@@ -36,10 +36,10 @@ const addFriendUrl = () => 'https://line.me/R/ti/p/' + encodeURIComponent(CFG.oa
 function landing() {
   const invited = params.get('ref') || CFG.has_pending_ref;
   app.innerHTML = `<section class="panel alert">
-      <h3>${invited ? '朋友邀你一起跑補給站' : '加入好友，領你的任務卡'}</h3>
-      <p>加入 PulsarPump 的 LINE 好友，我們會馬上把你專屬的任務卡傳到聊天室，點開就能開始。${invited ? '你和朋友會自動算成一隊。' : ''}</p>
+      <h3>${invited ? '朋友邀你一起去攤位' : '加入好友，領你的兌換券'}</h3>
+      <p>加入 PulsarPump 的 LINE 好友，我們會馬上把你專屬的兌換券傳到聊天室。選好距離，就幫你在攤位保留一份。${invited ? '你和朋友會自動算成一隊。' : ''}</p>
       <a class="btn primary" href="${addFriendUrl()}">加入 PulsarPump 好友</a>
-      <p class="note">已經是好友？在 PulsarPump 的聊天室輸入「${esc(CFG.keyword)}」，就會收到你的任務卡。</p>
+      <p class="note">已經是好友？在 PulsarPump 的聊天室輸入「${esc(CFG.keyword)}」，就會收到你的兌換券。</p>
     </section>`;
 }
 
@@ -64,8 +64,9 @@ async function openSession() {
   } else if (useDev) {
     payload.dev_user = params.get('dev_user') || 'tester';
     payload.dev_friend = params.get('friend') !== '0';
+    payload.dev_new = params.get('new') !== '0';
   } else {
-    throw new Error('任務卡尚未開放');
+    throw new Error('兌換券尚未開放');
   }
   try {
     S = (await api('/api/session', payload)).state;
@@ -93,7 +94,7 @@ async function boot() {
     document.getElementById('foot').innerHTML = esc(CFG.disclaimer) + '<br>© 2020–2026 PulsarPump 脈衝星 ｜ service@pulsarpump.com';
     if (await openSession()) render();
   } catch (e) {
-    app.innerHTML = `<section class="panel alert"><h3>打不開任務卡</h3><p class="msg bad">${esc(e.message)}</p><button class="primary" onclick="location.reload()">重新整理</button></section>`;
+    app.innerHTML = `<section class="panel alert"><h3>打不開兌換券</h3><p class="msg bad">${esc(e.message)}</p><button class="primary" onclick="location.reload()">重新整理</button></section>`;
   }
 }
 
@@ -114,19 +115,19 @@ const msg = key => flash[key] ? `<p class="msg ${flash[key].ok ? 'ok' : 'bad'}">
 
 const inviteUrl = () => CFG.liff_id
   ? `https://liff.line.me/${CFG.liff_id}?ref=${S.code}`
-  : `${location.origin}/?ref=${S.code}`;
+  : `${location.origin}${location.pathname}?ref=${S.code}`;
 
 async function invite() {
   const text = CFG.invite_text + inviteUrl();
   if (!CFG.demo && !window.liff && /Android|iPhone|iPad|Line\//i.test(navigator.userAgent)) {
     // 不在 LIFF 裡時，用 LINE 的分享連結開啟選擇聊天室的畫面
     location.href = 'https://line.me/R/share?text=' + encodeURIComponent(text);
-    return {note: '朋友加入好友並完成第 1 站後，這一站就會完成。'};
+    return {note: '朋友加入好友並領券後，你們就算一隊。'};
   }
   if (window.liff && liff.isApiAvailable && liff.isApiAvailable('shareTargetPicker')) {
     try {
       const res = await liff.shareTargetPicker([{type: 'text', text}]);
-      if (res) return {note: '邀請已送出。朋友加入好友並完成第 1 站後，這一站就會完成。'};
+      if (res) return {note: '邀請已送出。朋友加入好友並領券後，你們就算一隊。'};
       return {};
     } catch (e) { /* 改用複製 */ }
   }
@@ -140,48 +141,71 @@ async function invite() {
 
 // ---- 畫面 ----
 
-function rewardGummy() {
-  const r = S.rewards, t = S.today;
-  const fallbackBtn = r.fallback === 'available'
-    ? `<button data-act="fallback">改領官網 100 元折扣券</button><p class="note">改領後就不能再領軟糖。</p>` : '';
-  const map = {
-    locked: ['', '完成 3 站', `加入好友並完成任 3 站，到 ${esc(CFG.event.booth)} 攤位領能量軟糖 2 條。`],
-    ready: ['on', '可以領軟糖了', t.is_event_day
-      ? `到 ${esc(CFG.event.booth)} 攤位出示你的代碼。今日還有 ${t.gummy_left} 份。`
-      : `資格已達成。12/17–12/19 到 ${esc(CFG.event.booth)} 攤位出示代碼領取，每日限量。`],
-    out_today: ['warn', '今日軟糖已送完', t.over ? '' : '明天還有新的份數，也可以改領折扣券。'],
-    ended: ['warn', '博覽會已結束', '實體獎勵已停止發放。'],
-    claimed: ['on', '軟糖已領取', '謝謝你來攤位。'],
-    switched: ['on', '已改領官網折扣券', `<span class="coupon">${esc(r.fallback_code)}</span>結帳時輸入，可與新會員優惠併用。`],
-  }[r.gummy];
-  return `<div class="reward ${map[0]}"><b>${map[1]}</b><span>${map[2]}</span>${r.gummy === 'out_today' || r.gummy === 'ended' ? fallbackBtn : ''}${msg('fallback')}</div>`;
+// 贈品一列：左邊品名，右邊狀態章
+function item(name, sub, status) {
+  const label = {claimed: '已領取', ready: '已保留', out_today: '今日送完', ended: '已結束',
+                 waiting_partner: '等隊友', locked: '未達成'}[status];
+  const cls = status === 'claimed' ? 'done' : status === 'ready' ? 'on' : '';
+  return `<li class="item ${cls}"><div><b>${name}</b>${sub ? `<span>${sub}</span>` : ''}</div><i>${label}</i></li>`;
 }
 
-function rewardCrampeace() {
-  const t = S.today;
-  const map = {
-    locked: ['', '兩人組隊', '揪一位跑友，兩個人都到攤位完成第 4 站，各送勁速補 1 包。'],
-    waiting_partner: ['warn', '等隊友到攤位', '你這邊完成了，等隊友也完成第 4 站就能領勁速補。'],
-    ready: ['on', '可以領勁速補了', t.is_event_day ? `到攤位出示代碼。今日還有 ${t.crampeace_left} 份。` : '博覽會期間到攤位出示代碼領取。'],
-    out_today: ['warn', '今日勁速補已送完', t.over ? '' : '明天還有新的份數。'],
-    ended: ['warn', '博覽會已結束', '實體獎勵已停止發放。'],
-    claimed: ['on', '勁速補已領取', '謝謝你們一起來。'],
-  }[S.rewards.crampeace];
-  return `<div class="reward ${map[0]}"><b>${map[1]}</b><span>${map[2]}</span></div>`;
+function pickup() {
+  const t = S.today, booth = esc(CFG.event.booth);
+  if (S.arrived) return '<p class="muted">謝謝你來攤位。還有加碼沒領的話，達成後再給工作人員看一次代碼。</p>';
+  if (t.over) return '<p class="muted">博覽會已經結束，現場贈品停止發放。</p>';
+  if (t.is_event_day) return `<p><b>現在就可以領。</b>到 ${booth} 攤位，把下面的代碼給工作人員看。今日軟糖還有 ${t.left.gummy} 份。</p>`;
+  return `<p>12/17–12/19 到 ${booth} 攤位，把下面的代碼給工作人員看。每日限量，三天都可以來。</p>`;
 }
 
-function rewardCoupon5() {
-  const r = S.rewards;
-  return r.coupon5
-    ? `<div class="reward on"><b>5 站全部完成</b><span><span class="coupon">${esc(r.coupon5_code)}</span>官網 100 元折扣券，可與新會員優惠併用。</span></div>`
-    : `<div class="reward"><b>完成 5 站</b><span>官網 100 元折扣券，可與新會員優惠併用。</span></div>`;
+function quizBlock() {
+  const r = S.rewards, total = S.quiz.length, done = S.quiz.filter(q => q.answered).length;
+  const cur = S.quiz.find(q => !q.answered);
+  const draft = CFG.reviewed ? '' : '<p class="note">題目與解說為草稿，待黎醫師確認。</p>';
+  const answered = S.quiz.filter(q => q.answered).map(q => `
+    <div class="qa"><p class="q">${esc(q.text)}</p>
+      <p class="a"><b>${q.correct ? '答對了' : '答錯了'}，這句話是${q.truth ? '真的' : '假的'}。</b>${esc(q.explain)}</p></div>`).join('');
+  const ask = cur ? `<div class="qa now"><p class="note">第 ${done + 1} 題，共 ${total} 題</p><p class="q">${esc(cur.text)}</p>
+      <div class="row2"><button data-act="quiz" data-q="${cur.id}" data-v="1">真的</button><button data-act="quiz" data-q="${cur.id}" data-v="0">假的</button></div>${msg('quiz')}</div>` : '';
+  const end = cur ? '' : `<p class="msg ok">${total} 題都答完了，${r.bonus === 'claimed' ? '加碼軟糖已領取。' : '到攤位多拿 1 條軟糖。'}${esc(CFG.quiz_after)}</p>`;
+  return `<section class="extra" id="quiz">
+      <div class="extra-head"><span class="plus">加碼一</span><h3>答 ${total} 題真的假的，多拿 1 條軟糖</h3></div>
+      <p class="muted">不管答對答錯都算，答完看解說。</p>
+      ${answered}${ask}${end}${draft}
+    </section>`;
 }
 
-function station(k, tags, title, body) {
-  const done = S.stations[k];
-  const tagHtml = tags.map(t => `<span class="tag ${t[0]}">${t[1]}</span>`).join('') + (done ? '<span class="tag ok">已完成</span>' : '');
-  return `<li class="stn ${done ? 'done' : ''}" id="stn-${k}"><div class="mark">0${k}</div>
-    <div class="card"><div class="tags">${tagHtml}</div><h3>${title}</h3>${body}</div></li>`;
+function teamBlock() {
+  const st = S.rewards.crampeace;
+  const status = st === 'claimed' ? '勁速補已領取，謝謝你們一起來。'
+    : st === 'ready' ? '你們兩個都到了，給工作人員看代碼就能領勁速補。'
+    : st === 'out_today' ? '今日勁速補已送完，明天還有新的份數。'
+    : st === 'ended' ? '博覽會已經結束。'
+    : S.team_qualified ? (S.arrived ? '你到了，等隊友也到攤位，兩個人就各拿一包。' : '已經組隊。兩個人都到攤位，各拿勁速補 1 包。')
+    : S.has_partner ? '你們已經連上了，但對方原本就是 PulsarPump 的好友，這個加碼要揪新朋友才算。可以再邀一位。'
+    : '把邀請傳給一位還不是 PulsarPump 好友的跑友。他加入好友、領了券，你們就算一隊。';
+  const canInvite = !['claimed', 'ended'].includes(st);
+  return `<section class="extra" id="team">
+      <div class="extra-head"><span class="plus">加碼二</span><h3>揪一位新朋友，兩人各拿勁速補 1 包</h3></div>
+      <p class="muted">${status}</p>
+      ${canInvite ? `<button class="${S.team_qualified ? '' : 'primary'}" data-act="invite">${S.has_partner ? '再邀請一位' : '傳邀請給跑友'}</button>${msg('invite')}
+      <p class="note">你的邀請碼：<b>${esc(S.code)}</b></p>` : ''}
+      ${canInvite && !S.invited && !S.has_partner ? `<div class="codebox"><input id="refcode" placeholder="朋友的邀請碼" maxlength="5" autocomplete="off" autocapitalize="characters" aria-label="朋友的邀請碼">
+        <button data-act="ref">加入他的隊</button></div>${msg('ref')}` : ''}
+    </section>`;
+}
+
+function onsiteBlock() {
+  const r = S.rewards, offer = esc(r.onsite_text || '現場優惠');
+  if (r.onsite === 'locked') return `<section class="extra">
+      <div class="extra-head"><span class="plus">現場限定</span><h3>到攤位後，這裡會出現現場優惠券</h3></div>
+      <p class="muted">當場購買才能使用。</p></section>`;
+  if (r.onsite === 'used') return `<section class="extra">
+      <div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠券</h3></div>
+      <div class="coupon used">${offer}<small>已使用</small></div></section>`;
+  return `<section class="extra">
+      <div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠券</h3></div>
+      <div class="coupon">${offer}<small>結帳時把這個畫面給工作人員看</small></div>
+      <p class="note">限博覽會現場使用，每人一次。</p></section>`;
 }
 
 function render() {
@@ -194,85 +218,78 @@ function render() {
     </section>`;
     return bind();
   }
-  const draft = CFG.reviewed ? '' : '<p class="note">內容為草稿，待黎醫師確認。</p>';
   const friend = S.is_friend ? '' : `<section class="panel alert">
-      <h3>${CFG.friend_check === 'staff' ? '領獎前，請攤位人員確認好友' : '先加入 LINE 好友'}</h3>
+      <h3>${CFG.friend_check === 'staff' ? '領取前，請攤位人員確認好友' : '先加入 LINE 好友'}</h3>
       <p class="muted">${CFG.friend_check === 'staff'
-        ? '進度已經幫你記錄。加入好友後，到攤位把 LINE 畫面給工作人員看一下，就能領獎勵。'
-        : '進度已經幫你記錄。加入好友後才能領獎勵，博覽會前一天也會提醒你。'}</p>
+        ? '加入好友後，到攤位把 LINE 畫面給工作人員看一下，就能領取。'
+        : '加入好友後才能領取，博覽會前一天也會提醒你。'}</p>
       <a class="btn primary" href="${addFriendUrl()}" target="_blank" rel="noopener">加入 PulsarPump 好友</a>
       <button data-act="refresh">${CFG.friend_check === 'staff' ? '重新整理' : '我加好了，重新整理'}</button>${msg('refresh')}
     </section>`;
+  const distButtons = `<div class="row">${Object.entries(DIST).map(([k, v]) =>
+      `<button data-act="dist" data-v="${k}" class="${S.distance === k ? 'sel' : ''}">${v}</button>`).join('')}</div>${msg('dist')}`;
 
-  const plan = S.distance ? '<table>' + CFG.plans[S.distance].map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join('') + '</table>' : '';
-  const s1 = `<div class="row">${[['half', '半馬'], ['full', '全馬'], ['cheer', '陪跑加油']].map(d =>
-      `<button data-act="dist" data-v="${d[0]}" class="${S.distance === d[0] ? 'sel' : ''}">${d[1]}</button>`).join('')}</div>
-    ${plan}${draft}${msg('dist')}<p class="note">到攤位可以請我們依你的配速調整。</p>`;
+  // 第一步：還沒選距離
+  if (!S.distance) {
+    app.innerHTML = `${friend}<section class="panel alert">
+        <h3>你這次跑什麼距離？</h3>
+        <p class="muted">選好之後，我們照你的距離準備一張補給時間表，連同試喝和軟糖，在 ${esc(CFG.event.booth)} 攤位幫你留一份。</p>
+        ${distButtons}
+      </section>`;
+    return bind();
+  }
 
-  const s2 = S.stations['2']
-    ? `<p>${flash.myth ? '' : esc(S.myth_explain || '')}</p>${msg('myth')}${draft}`
-    : `<div class="row2"><button data-act="myth" data-v="1">真的</button><button data-act="myth" data-v="0">假的</button></div>${msg('myth')}`;
+  if (S.rewards.absent) {
+    app.innerHTML = `<section class="panel alert">
+        <h3>這次沒遇到你，送你一張官網折扣券</h3>
+        <span class="coupon">${esc(S.rewards.absent_code)}</span>
+        <p class="muted">到 pulsarpump.com 結帳時輸入。</p>
+      </section>`;
+    return bind();
+  }
 
-  const s3 = `<p class="muted">${S.stations['3'] ? '你們已經是一隊。兩個人都到攤位完成第 4 站，各送勁速補 1 包。'
-      : S.has_partner ? '朋友已經點開邀請。等他加入好友並完成第 1 站，這一站就會完成。'
-      : '把任務卡傳給一位要去博覽會的朋友。他加入好友並完成第 1 站，你們就算一隊。'}</p>
-    <button class="${S.stations['3'] ? '' : 'primary'}" data-act="invite">${S.stations['3'] ? '再邀請一位' : '傳邀請給跑友'}</button>${msg('invite')}
-    <p class="note">你的邀請碼：<b>${esc(S.code)}</b></p>
-    ${S.stations['3'] || S.invited ? '' : `<div class="codebox"><input id="refcode" placeholder="朋友的邀請碼" maxlength="5" autocomplete="off" autocapitalize="characters" aria-label="朋友的邀請碼">
-      <button data-act="ref">加入他的隊</button></div>${msg('ref')}`}`;
-
-  const s4 = S.stations['4'] ? '<p class="muted">謝謝你來攤位。</p>'
-    : S.today.over ? '<p class="muted">博覽會已經結束，這一站不能再蓋章了。</p>'
-    : !S.today.is_event_day ? `<p class="muted">12/17–12/19 帶著這張任務卡到 ${esc(CFG.event.booth)} 攤位，喝一杯冰的搖滾話梅，跟工作人員拿當日通關碼來蓋這一格。三天都可以來。</p>`
-    : `<p class="muted">出示這張任務卡，試喝後工作人員會給你當日通關碼。三天都可以來。</p>
-       <div class="codebox"><input id="code4" placeholder="輸入通關碼" autocomplete="off" autocapitalize="characters" aria-label="通關碼">
-       <button data-act="code">送出</button></div>${msg('code')}`;
-
-  const s5 = S.stations['5'] ? `<p class="muted">問題收到了。精選題目會拍成「醫師說」影片，被選上會通知你。</p>${msg('ask')}`
-    : `<p class="muted">在攤位直接問黎醫師，或寫在這裡。精選題目會拍成「醫師說」影片，被選上會通知你。</p>
-       <label for="q">你的問題<textarea id="q" maxlength="200" placeholder="例如：全馬 30K 後胃口很差，還要硬吃嗎？"></textarea></label>
-       <button data-act="ask">送出問題</button>${msg('ask')}
-       <p class="note">不回答個人病情、用藥與檢查數值，這類狀況請直接就醫。</p>`;
-
-  // 下一步：線上能做的先做（1、2、3、5），第 4 站留到現場
-  const NEXT = {1: '選你的距離', 2: '回答一題真的假的', 3: '揪一位跑友', 5: '問黎醫師一題', 4: '到攤位試喝'};
-  const todo = [1, 2, 3, 5, 4].filter(k => !S.stations[k]);
-  const onlyBooth = todo.length === 1 && todo[0] === 4 && !S.today.is_event_day;
-  const next = !todo.length ? '<p class="next-done">5 格都蓋滿了。</p>'
-    : onlyBooth ? (S.today.over ? '' : `<p class="next-done">線上的都完成了。最後一格，12/17 起到 ${esc(CFG.event.booth)} 攤位蓋。</p>`)
-    : `<button class="primary" data-act="goto" data-v="${todo[0]}">${S.count ? '下一格' : '開始第一格'}：${NEXT[todo[0]]}</button>`;
-
+  const r = S.rewards;
+  const plan = '<table>' + CFG.plans[S.distance].map(x => `<tr><td>${esc(x[0])}</td><td>${esc(x[1])}</td></tr>`).join('') + '</table>';
+  const got = r.gummy === 'claimed';
   app.innerHTML = `${friend}
-    <section class="progress" aria-live="polite">
-      <div class="progress-top"><span class="muted">已蓋章</span><b>${S.count} / 5</b></div>
-      <div class="stamps" role="img" aria-label="已完成 ${S.count} 站，共 5 站">${[1, 2, 3, 4, 5].map(k => S.stations[k]
-        ? `<div class="slot done ${seen && !seen[k] ? 'new' : ''}">${STAMP[k]}</div>`
-        : `<div class="slot">${k}</div>`).join('')}</div>
-      ${next}
-      <div class="mycode"><span class="muted">出示給攤位人員的代碼</span><b>${esc(S.code)}</b></div>
+    <section class="ticket" aria-live="polite">
+      <p class="for">${esc(S.name) ? esc(S.name) + '，' : ''}已經幫你保留</p>
+      <ul class="items">
+        ${item(`${DIST[S.distance]}補給時間表`, '實體小卡，比賽當天帶著', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
+        ${item('冰的搖滾話梅 1 杯', '現場試喝', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
+        ${item('能量軟糖 2 條', '', r.gummy)}
+        ${r.bonus !== 'locked' ? item('加碼：能量軟糖 1 條', '答題加碼', r.bonus) : ''}
+        ${!['locked', 'waiting_partner'].includes(r.crampeace) ? item('加碼：勁速補 1 包', '揪新朋友加碼', r.crampeace) : ''}
+      </ul>
+      ${pickup()}
+      <div class="mycode"><span class="muted">兌換代碼</span><b>${esc(S.code)}</b></div>
+      <p class="note">每人各限領一次，每日限量，送完為止。</p>
     </section>
-    <section class="rewards">${rewardGummy()}${rewardCrampeace()}${rewardCoupon5()}
-      <p class="note" style="padding-top:10px">實體獎勵每人各限領一次，每日限量，送完為止。</p></section>
-    <ol class="route">
-      ${station('1', [['online', '線上']], '選你的距離，拿一張補給時間表', s1)}
-      ${station('2', [['online', '線上']], esc(CFG.myth.question), s2)}
-      ${station('3', [['online', '線上']], '揪一位跑友一起來', s3)}
-      ${station('4', [['onsite', '現場']], '到攤位喝一杯冰的搖滾話梅', s4)}
-      ${station('5', [['onsite', '現場'], ['online', '或線上']], '問黎醫師一題', s5)}
-    </ol>
-    <p class="note">不去博覽會？活動結束後，完成 3 站的好友可以改領官網折扣券。</p>`;
-  seen = {...S.stations};
+    <details class="plan"${got ? '' : ''}>
+      <summary>先看你的${DIST[S.distance]}補給時間表</summary>
+      ${plan}
+      ${CFG.reviewed ? '' : '<p class="note">內容為草稿，待黎醫師確認。</p>'}
+      <p class="note">到攤位可以請我們依你的配速調整。${S.arrived ? '' : ' <button class="link" data-act="redist">改距離</button>'}</p>
+      ${editDistance ? distButtons : ''}
+    </details>
+    ${quizBlock()}
+    ${teamBlock()}
+    ${onsiteBlock()}
+    <section class="extra">
+      <div class="extra-head"><span class="plus">想問就問</span><h3>有問題想問黎醫師？</h3></div>
+      ${S.asked ? `<p class="muted">問題收到了。精選題目會拍成「醫師說」影片，被選上會通知你。</p>${msg('ask')}` : ''}
+      <label for="q">${S.asked ? '還想再問一題' : '寫在這裡，或到攤位當面問'}<textarea id="q" maxlength="200" placeholder="例如：全馬 30K 後胃口很差，還要硬吃嗎？"></textarea></label>
+      <button data-act="ask">送出問題</button>${S.asked ? '' : msg('ask')}
+      <p class="note">不回答個人病情、用藥與檢查數值，這類狀況請直接就醫。</p>
+    </section>
+    <p class="note">不能來博覽會？活動結束後，這裡會出現一張官網折扣券。</p>`;
   bind();
 }
 
 function bind() {
   app.querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', () => {
     const a = el.dataset.act, v = el.dataset.v;
-    if (a === 'goto') {
-      const t = document.getElementById('stn-' + v);
-      if (t) t.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
-      return;
-    }
+    if (a === 'redist') { editDistance = !editDistance; return render(); }
     el.disabled = true;
     if (a === 'consent') return act('consent', () => api('/api/consent', {}));
     if (a === 'refresh') return act('refresh', async () => {
@@ -282,17 +299,17 @@ function bind() {
         : CFG.friend_check === 'oa' ? `還沒偵測到。加入後在聊天室輸入「${CFG.keyword}」再試一次。`
         : '還沒偵測到好友狀態，加入後再按一次。', bad: true};
     });
-    if (a === 'dist') return act('dist', () => api('/api/station/1', {distance: v}));
-    if (a === 'myth') return act('myth', async () => {
-      const r = await api('/api/station/2', {answer: v === '1'});
-      return {state: r.state, note: (r.correct ? '答對了。' : '其實是假的。') + r.explain};
-    });
+    if (a === 'dist') { editDistance = false; return act('dist', () => api('/api/distance', {distance: v})); }
+    if (a === 'quiz') return act('quiz', () => api('/api/quiz', {q: Number(el.dataset.q), answer: v === '1'}));
     if (a === 'invite') return act('invite', invite);
     if (a === 'ref') return act('ref', () => api('/api/ref', {code: document.getElementById('refcode').value}));
-    if (a === 'code') return act('code', () => api('/api/station/4', {code: document.getElementById('code4').value}));
-    if (a === 'ask') return act('ask', () => api('/api/station/5', {text: document.getElementById('q').value}));
-    if (a === 'fallback') return act('fallback', () => api('/api/reward/fallback', {}));
+    if (a === 'ask') return act('ask', async () => {
+      const r = await api('/api/ask', {text: document.getElementById('q').value});
+      return {state: r.state, note: '問題收到了。'};
+    });
   }));
+  // 改距離時時間表要保持展開
+  if (editDistance) { const d = app.querySelector('details.plan'); if (d) d.open = true; }
 }
 
 boot();

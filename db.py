@@ -8,19 +8,22 @@ CREATE TABLE IF NOT EXISTS users (
     name        TEXT NOT NULL DEFAULT '',
     code        TEXT NOT NULL UNIQUE,      -- 出示給攤位人員的 5 碼
     is_friend   INTEGER NOT NULL DEFAULT 0,
+    is_new      INTEGER NOT NULL DEFAULT 0, -- 活動期間才加入的好友（揪朋友加碼只算新好友）
     distance    TEXT,                      -- half / full / cheer
     invited_by  TEXT REFERENCES users(id),
+    arrived_at  TEXT,                      -- 攤位人員報到的時間
     consent_at  TEXT,
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_invited_by ON users(invited_by);
 
-CREATE TABLE IF NOT EXISTS completions (
+-- 真的假的：每人固定 3 題，記錄他的答案
+CREATE TABLE IF NOT EXISTS quiz (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    station INTEGER NOT NULL,
+    q       INTEGER NOT NULL,
+    answer  INTEGER NOT NULL,
     at      TEXT NOT NULL,
-    meta    TEXT,
-    PRIMARY KEY (user_id, station)
+    PRIMARY KEY (user_id, q)
 );
 
 CREATE TABLE IF NOT EXISTS questions (
@@ -30,7 +33,7 @@ CREATE TABLE IF NOT EXISTS questions (
     at      TEXT NOT NULL
 );
 
--- reward: gummy / crampeace / fallback / coupon5
+-- reward: gummy（報到軟糖）/ bonus（答題加碼）/ crampeace / onsite（現場優惠已使用）
 CREATE TABLE IF NOT EXISTS claims (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     reward  TEXT NOT NULL,
@@ -40,12 +43,6 @@ CREATE TABLE IF NOT EXISTS claims (
 );
 CREATE INDEX IF NOT EXISTS idx_claims_day ON claims(reward, day);
 
-CREATE TABLE IF NOT EXISTS code_attempts (
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    day     TEXT NOT NULL,
-    n       INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (user_id, day)
-);
 """
 
 

@@ -31,8 +31,7 @@ class Base(unittest.TestCase):
         self.app = create_app({
             "DEV_MODE": True, "DB_PATH": os.path.join(self.tmp.name, "t.db"),
             "STAFF_PIN": "4321", "ADMIN_TOKEN": "adm",
-            "DAY_CODES": {"2026-12-17": "THU17", "2026-12-18": "FRI18", "2026-12-19": "SAT19"},
-            "COUPON_5": "FIVE100", "COUPON_FALLBACK": "BACK100",
+            "ONSITE_OFFER": "現場折 100", "COUPON_ABSENT": "MISS100",
             "NOW_FN": lambda: self.clock, **self.extra_config,
         })
         self.clients = {}
@@ -45,11 +44,14 @@ class Base(unittest.TestCase):
             self.clients[who] = self.app.test_client()
         return self.clients[who]
 
-    def join(self, who, friend=True, ref=None, consent=True):
-        r = self.c(who).post("/api/session", json={"dev_user": who, "dev_friend": friend, "ref": ref})
+    def join(self, who, friend=True, ref=None, consent=True, new=True, distance="half"):
+        r = self.c(who).post("/api/session", json={
+            "dev_user": who, "dev_friend": friend, "dev_new": new, "ref": ref})
         self.assertEqual(r.status_code, 200, r.get_json())
         if consent:
             self.c(who).post("/api/consent")
+            if distance:
+                self.post(who, "/api/distance", distance=distance)
         return self.me(who)
 
     def me(self, who):
@@ -61,194 +63,226 @@ class Base(unittest.TestCase):
     def staff(self, path, pin="4321", **data):
         return self.app.test_client().post(path, json=data, headers={"X-Staff-Pin": pin})
 
-    def online3(self, who):
-        """做完第 1、2 站，再加上第 5 站，共 3 站。"""
-        self.post(who, "/api/station/1", distance="half")
-        self.post(who, "/api/station/2", answer=False)
-        self.post(who, "/api/station/5", text="賽前一晚吃什麼？")
+    def checkin(self, who):
+        return self.staff("/api/staff/checkin", code=self.me(who)["code"])
+
+    def quiz(self, who):
+        for q in self.me(who)["quiz"]:
+            self.post(who, "/api/quiz", q=q["id"], answer=True)
 
 
-class TestFlow(Base):
+class TestVoucher(Base):
     def test_consent_required(self):
         self.join("a", consent=False)
-        r = self.post("a", "/api/station/1", distance="half")
-        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.post("a", "/api/distance", distance="half").status_code, 403)
 
-    def test_progress_persists_across_sessions(self):
-        self.join("a")
-        self.post("a", "/api/station/1", distance="full")
-        self.clients.pop("a")          # 換一台裝置
-        s = self.join("a")
-        self.assertTrue(s["stations"]["1"])
-        self.assertEqual(s["distance"], "full")
+    def test_distance_reserves_gummy(self):
+        s = self.join("a", distance=None)
+        self.assertEqual(s["rewards"]["gummy"], "locked")
+        r = self.post("a", "/api/distance", distance="full").get_json()["state"]
+        self.assertEqual(r["rewards"]["gummy"], "ready")
+        self.assertEqual(self.post("a", "/api/distance", distance="ultra").status_code, 400)
 
-    def test_myth_answer(self):
-        self.join("a")
-        r = self.post("a", "/api/station/2", answer=True).get_json()
-        self.assertFalse(r["correct"])
-        self.assertTrue(r["state"]["stations"]["2"])
+    def test_progress_persists_across_devices(self):
+        self.join("a", distance="full")
+        self.clients.pop("a")
+        self.assertEqual(self.join("a", distance=None)["distance"], "full")
 
-    def test_station4_only_on_event_day_with_right_code(self):
-        self.join("a")
-        self.assertEqual(self.post("a", "/api/station/4", code="THU17").status_code, 400)
+    def test_not_friend_cannot_reserve_or_checkin(self):
+        self.join("a", friend=False)
+        self.assertEqual(self.me("a")["rewards"]["gummy"], "locked")
         self.clock = at("2026-12-17 13:00")
-        self.assertEqual(self.post("a", "/api/station/4", code="FRI18").status_code, 400)
-        r = self.post("a", "/api/station/4", code="thu17")
-        self.assertTrue(r.get_json()["state"]["stations"]["4"])
+        r = self.checkin("a")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.get_json()["reason"], "not_friend")
+        self.assertFalse(self.me("a")["arrived"])
 
-    def test_station4_attempt_limit(self):
+    def test_checkin_only_on_event_days(self):
+        self.join("a")
+        self.assertEqual(self.checkin("a").status_code, 400)
+        self.clock = at("2026-12-17 13:00")
+        r = self.checkin("a").get_json()
+        self.assertEqual(r["given"], ["gummy"])
+        s = self.me("a")
+        self.assertTrue(s["arrived"])
+        self.assertEqual(s["rewards"]["gummy"], "claimed")
+
+    def test_checkin_needs_distance(self):
+        self.join("a", distance=None)
+        self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.checkin("a").get_json()["reason"], "no_distance")
+
+    def test_checkin_twice_gives_nothing_more(self):
         self.join("a")
         self.clock = at("2026-12-17 13:00")
-        for _ in range(rules.MAX_CODE_ATTEMPTS):
-            self.post("a", "/api/station/4", code="WRONG")
-        self.assertEqual(self.post("a", "/api/station/4", code="THU17").status_code, 429)
+        self.checkin("a")
+        self.assertEqual(self.checkin("a").get_json()["given"], [])
+        self.clock = at("2026-12-18 13:00")
+        self.assertEqual(self.checkin("a").get_json()["given"], [])
 
     def test_question_validation(self):
         self.join("a")
-        self.assertEqual(self.post("a", "/api/station/5", text=" ").status_code, 400)
-        self.assertEqual(self.post("a", "/api/station/5", text="x" * 201).status_code, 400)
+        self.assertEqual(self.post("a", "/api/ask", text=" ").status_code, 400)
+        self.assertEqual(self.post("a", "/api/ask", text="x" * 201).status_code, 400)
+        self.assertTrue(self.post("a", "/api/ask", text="賽前吃什麼").get_json()["state"]["asked"])
+
+
+class TestQuiz(Base):
+    def test_three_fixed_questions_no_answer_leak(self):
+        s = self.join("a")
+        self.assertEqual(len(s["quiz"]), 3)
+        self.assertTrue(all("explain" not in q and "truth" not in q for q in s["quiz"]))
+        self.assertEqual([q["id"] for q in s["quiz"]], [q["id"] for q in self.me("a")["quiz"]])
+
+    def test_bonus_after_all_answered_regardless_of_correctness(self):
+        self.join("a")
+        qs = self.me("a")["quiz"]
+        self.post("a", "/api/quiz", q=qs[0]["id"], answer=True)
+        self.assertEqual(self.me("a")["rewards"]["bonus"], "locked")
+        for q in qs[1:]:
+            self.post("a", "/api/quiz", q=q["id"], answer=True)
+        s = self.me("a")
+        self.assertTrue(s["quiz_done"])
+        self.assertEqual(s["rewards"]["bonus"], "ready")
+        self.assertTrue(all("explain" in q for q in s["quiz"]))
+
+    def test_first_answer_counts_and_foreign_question_rejected(self):
+        self.join("a")
+        q = self.me("a")["quiz"][0]
+        first = self.post("a", "/api/quiz", q=q["id"], answer=True).get_json()["state"]["quiz"][0]["correct"]
+        again = self.post("a", "/api/quiz", q=q["id"], answer=False).get_json()["state"]["quiz"][0]["correct"]
+        self.assertEqual(first, again)
+        mine = {x["id"] for x in self.me("a")["quiz"]}
+        other = next(i for i in range(6) if i not in mine)
+        self.assertEqual(self.post("a", "/api/quiz", q=other, answer=True).status_code, 400)
+
+    def test_bonus_given_at_checkin_or_later(self):
+        self.join("a")
+        self.quiz("a")
+        self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.checkin("a").get_json()["given"], ["gummy", "bonus"])
+        self.join("b")
+        self.assertEqual(self.checkin("b").get_json()["given"], ["gummy"])
+        self.quiz("b")                      # 排隊時才答完
+        self.assertEqual(self.checkin("b").get_json()["given"], ["bonus"])
 
 
 class TestTeam(Base):
-    def test_station3_completes_for_both_when_invitee_qualifies(self):
-        a = self.join("a")
-        self.join("b", ref=a["code"])
-        self.assertFalse(self.me("a")["stations"]["3"])
-        self.post("b", "/api/station/1", distance="half")
-        self.assertTrue(self.me("a")["stations"]["3"])
-        self.assertTrue(self.me("b")["stations"]["3"])
+    def test_new_friend_pair_both_get_crampeace(self):
+        a = self.join("a", new=False)                 # 原本的好友揪人
+        self.join("b", ref=a["code"], new=True)       # 被揪的是新好友
+        self.assertEqual(self.me("a")["rewards"]["crampeace"], "waiting_partner")
+        self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.checkin("a").get_json()["given"], ["gummy"])
+        r = self.checkin("b").get_json()
+        self.assertEqual(r["given"], ["gummy", "crampeace"])
+        self.assertEqual(r["mates_ready"], [{"name": "a", "code": a["code"]}])
+        self.assertEqual(self.checkin("a").get_json()["given"], ["crampeace"])
 
-    def test_non_friend_invitee_does_not_count_until_friend(self):
+    def test_inviting_existing_friend_does_not_count(self):
         a = self.join("a")
-        self.join("b", friend=False, ref=a["code"])
-        self.post("b", "/api/station/1", distance="half")
-        self.assertFalse(self.me("a")["stations"]["3"])
-        self.join("b", friend=True)
-        self.assertTrue(self.me("a")["stations"]["3"])
+        self.join("b", ref=a["code"], new=False)
+        sa, sb = self.me("a"), self.me("b")
+        self.assertTrue(sa["has_partner"])
+        self.assertFalse(sa["team_qualified"])
+        self.assertEqual(sa["rewards"]["crampeace"], "locked")
+        self.assertEqual(sb["rewards"]["crampeace"], "locked")
+        self.clock = at("2026-12-17 13:00")
+        self.checkin("a")
+        self.assertEqual(self.checkin("b").get_json()["given"], ["gummy"])
 
-    def test_cannot_invite_self_or_form_cycle(self):
+    def test_invitee_must_be_friend(self):
+        a = self.join("a")
+        self.join("b", ref=a["code"], friend=False)
+        self.assertFalse(self.me("a")["team_qualified"])
+
+    def test_no_self_or_mutual_invite(self):
         a = self.join("a")
         self.join("a", ref=a["code"])
-        self.post("a", "/api/station/1", distance="half")
-        self.assertFalse(self.me("a")["stations"]["3"])
+        self.assertFalse(self.me("a")["invited"])
         b = self.join("b", ref=a["code"])
-        self.join("a", ref=b["code"])  # a 已是 b 的邀請人，不可反向
-        with self.app.app_context():
-            import db as dbm
-            conn = dbm.connect(self.app.config["DB_PATH"])
-            self.assertIsNone(conn.execute(
-                "SELECT invited_by FROM users WHERE id='dev:a'").fetchone()[0])
+        self.clients.pop("a")
+        self.join("a", ref=b["code"])
+        self.assertFalse(self.me("a")["invited"])
 
-
-class TestRewards(Base):
-    def test_gummy_needs_friend_and_three_stations_and_event_day(self):
-        a = self.join("a", friend=False)
-        self.online3("a")
-        self.assertEqual(self.me("a")["rewards"]["gummy"], "locked")
-        a = self.join("a", friend=True)
-        self.assertEqual(a["rewards"]["gummy"], "ready")
-        r = self.staff("/api/staff/claim", code=a["code"], reward="gummy")
-        self.assertEqual(r.status_code, 400)  # 還沒到展期
+    def test_crampeace_once_even_with_many_invitees(self):
+        a = self.join("a")
+        self.join("b", ref=a["code"]); self.join("c", ref=a["code"])
         self.clock = at("2026-12-17 13:00")
-        r = self.staff("/api/staff/claim", code=a["code"], reward="gummy")
-        self.assertEqual(r.status_code, 200)
-        r = self.staff("/api/staff/claim", code=a["code"], reward="gummy")
-        self.assertEqual(r.status_code, 409)  # 不能領第二次
-        self.clock = at("2026-12-18 13:00")
-        r = self.staff("/api/staff/claim", code=a["code"], reward="gummy")
-        self.assertEqual(r.status_code, 409)  # 隔天也不行
+        for w in ("a", "b", "c"):
+            self.checkin(w)
+        self.assertEqual(self.checkin("a").get_json()["given"], ["crampeace"])
+        self.assertEqual(self.checkin("a").get_json()["given"], [])
 
-    def test_staff_pin_required(self):
+
+class TestCapsAndCoupons(Base):
+    def test_daily_cap_then_next_day(self):
+        cap = rules.EVENT_DAYS["2026-12-17"]["gummy"]
+        self.clock = at("2026-12-17 13:00")
+        for i in range(cap):
+            self.join(f"u{i}")
+            self.assertEqual(self.checkin(f"u{i}").get_json()["given"], ["gummy"])
+        self.join("late")
+        self.assertEqual(self.me("late")["rewards"]["gummy"], "out_today")
+        r = self.checkin("late").get_json()
+        self.assertEqual(r["given"], [])
+        self.assertTrue(self.me("late")["arrived"])          # 沒拿到軟糖，但到場仍算數
+        self.assertEqual(self.me("late")["rewards"]["onsite"], "ready")
+        self.clock = at("2026-12-18 13:00")
+        self.assertEqual(self.checkin("late").get_json()["given"], ["gummy"])
+
+    def test_onsite_coupon_after_arrival_once(self):
+        a = self.join("a")
+        self.assertEqual(a["rewards"]["onsite"], "locked")
+        self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 409)
+        self.checkin("a")
+        s = self.me("a")
+        self.assertEqual((s["rewards"]["onsite"], s["rewards"]["onsite_text"]), ("ready", "現場折 100"))
+        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)
+        self.assertEqual(self.me("a")["rewards"]["onsite"], "used")
+        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 409)
+
+    def test_absent_coupon_only_after_event_for_no_shows(self):
+        self.join("came"); self.join("missed"); self.join("nofriend", friend=False)
+        self.assertFalse(self.me("missed")["rewards"]["absent"])
+        self.clock = at("2026-12-17 13:00")
+        self.checkin("came")
+        self.clock = at("2026-12-20 09:00")
+        self.assertEqual(self.me("missed")["rewards"]["absent_code"], "MISS100")
+        self.assertFalse(self.me("came")["rewards"]["absent"])
+        self.assertFalse(self.me("nofriend")["rewards"]["absent"])
+        self.assertEqual(self.me("missed")["rewards"]["gummy"], "ended")
+
+
+class TestStaffAndAdmin(Base):
+    def test_pin_required(self):
         a = self.join("a")
         self.assertEqual(self.staff("/api/staff/lookup", pin="0000", code=a["code"]).status_code, 401)
+        r = self.staff("/api/staff/lookup", code=a["code"].lower()).get_json()["user"]
+        self.assertEqual((r["distance"], r["arrived"]), ("half", False))
+        self.assertEqual(self.staff("/api/staff/lookup", code="ZZZZZ").status_code, 404)
 
-    def test_daily_cap_then_fallback_coupon(self):
-        rules.EVENT_DAYS["2026-12-17"]["gummy"] = 2
-        try:
-            self.clock = at("2026-12-17 13:00")
-            codes = []
-            for who in ("a", "b", "c"):
-                s = self.join(who)
-                self.online3(who)
-                codes.append(s["code"])
-            self.assertEqual(self.staff("/api/staff/claim", code=codes[0], reward="gummy").status_code, 200)
-            self.assertEqual(self.staff("/api/staff/claim", code=codes[1], reward="gummy").status_code, 200)
-            r = self.staff("/api/staff/claim", code=codes[2], reward="gummy")
-            self.assertEqual(r.status_code, 409)
-            self.assertEqual(r.get_json()["reason"], "out_today")
-            s = self.me("c")
-            self.assertEqual(s["rewards"]["fallback"], "available")
-            s = self.post("c", "/api/reward/fallback").get_json()["state"]
-            self.assertEqual(s["rewards"]["fallback_code"], "BACK100")
-            self.assertEqual(s["rewards"]["gummy"], "switched")
-            # 改領折扣券後，隔天份數回補也不能再領軟糖
-            self.clock = at("2026-12-18 13:00")
-            self.assertEqual(self.staff("/api/staff/claim", code=codes[2], reward="gummy").status_code, 409)
-            # 已領軟糖的人不能再拿備案折扣券
-            self.assertEqual(self.post("a", "/api/reward/fallback").status_code, 400)
-        finally:
-            rules.EVENT_DAYS["2026-12-17"]["gummy"] = 150
-
-    def test_fallback_after_event_for_online_only(self):
+    def test_today_counts(self):
         self.join("a")
-        self.online3("a")
-        self.assertEqual(self.me("a")["rewards"]["fallback"], "none")
-        self.clock = at("2026-12-19 18:01")
-        self.assertEqual(self.me("a")["rewards"]["fallback"], "available")
-        self.assertEqual(self.me("a")["rewards"]["gummy"], "ended")
-
-    def test_crampeace_needs_both_at_booth(self):
-        a = self.join("a")
-        b = self.join("b", ref=a["code"])
-        self.post("a", "/api/station/1", distance="half")
-        self.post("b", "/api/station/1", distance="half")
         self.clock = at("2026-12-19 11:00")
-        self.post("a", "/api/station/4", code="SAT19")
-        self.assertEqual(self.me("a")["rewards"]["crampeace"], "waiting_partner")
-        r = self.staff("/api/staff/claim", code=a["code"], reward="crampeace")
-        self.assertEqual(r.status_code, 409)
-        self.post("b", "/api/station/4", code="SAT19")
-        for who in (a, b):
-            r = self.staff("/api/staff/claim", code=who["code"], reward="crampeace")
-            self.assertEqual(r.status_code, 200)
+        self.checkin("a")
+        r = self.app.test_client().get("/api/staff/today", headers={"X-Staff-Pin": "4321"}).get_json()
+        self.assertEqual(r["gummy"], {"cap": 300, "left": 299})
+        self.assertEqual(r["bonus"]["cap"], 300)
 
-    def test_coupon5_when_all_done(self):
-        a = self.join("a")
+    def test_admin_stats(self):
+        a = self.join("a", new=False)
         self.join("b", ref=a["code"])
-        self.post("b", "/api/station/1", distance="half")
-        self.online3("a")
-        self.assertFalse(self.me("a")["rewards"]["coupon5"])
-        self.clock = at("2026-12-18 13:00")
-        s = self.post("a", "/api/station/4", code="FRI18").get_json()["state"]
-        self.assertTrue(s["rewards"]["coupon5"])
-        self.assertEqual(s["rewards"]["coupon5_code"], "FIVE100")
-
-    def test_staff_can_mark_station_4_and_5(self):
-        a = self.join("a")
+        self.quiz("b")
         self.clock = at("2026-12-17 13:00")
-        self.staff("/api/staff/mark", code=a["code"], station=4)
-        self.staff("/api/staff/mark", code=a["code"], station=5)
-        s = self.me("a")
-        self.assertTrue(s["stations"]["4"] and s["stations"]["5"])
-        self.assertEqual(self.staff("/api/staff/mark", code=a["code"], station=1).status_code, 400)
-
-
-class TestAdmin(Base):
-    def test_stats_and_csv(self):
-        self.join("a")
-        self.online3("a")
-        c = self.app.test_client()
-        self.assertEqual(c.get("/api/admin/stats").status_code, 401)
-        s = c.get("/api/admin/stats?token=adm").get_json()
-        self.assertEqual(s["users"], 1)
-        self.assertEqual(s["questions"], 1)
-        csv_text = c.get("/api/admin/questions.csv?token=adm").get_data(as_text=True)
-        self.assertIn("賽前一晚吃什麼？", csv_text)
-
-    def test_production_requires_secret(self):
-        with self.assertRaises(RuntimeError):
-            create_app({"DEV_MODE": False, "DB_PATH": os.path.join(self.tmp.name, "p.db"),
-                        "SECRET_KEY": "dev-only-change-me"})
+        self.checkin("b")
+        cl = self.app.test_client()
+        self.assertEqual(cl.get("/api/admin/stats?token=x").status_code, 401)
+        d = cl.get("/api/admin/stats?token=adm").get_json()
+        self.assertEqual((d["users"], d["new_friends"], d["arrived"], d["quiz_done"], d["invited_new"]),
+                         (2, 1, 1, 1, 1))
+        self.assertEqual(cl.get("/api/admin/questions.csv?token=adm").status_code, 200)
 
 
 class TestOAIdentity(Base):
@@ -315,14 +349,16 @@ class TestOAIdentity(Base):
         self.assertEqual(len(self.sent), 1)
         self.c("b").get(self.link_path())
         self.assertTrue(self.me("b")["is_friend"])
+        self.assertFalse(self.me("b")["is_new"])            # 原本就是好友
 
     def test_same_user_same_card(self):
         a = self.open("a", "U1")
-        self.post("a", "/api/station/1", distance="half")
+        self.post("a", "/api/distance", distance="half")
         self.hook(self.ev("message", "U1", "任務卡"))
         self.c("a2").get(self.link_path())
         self.assertEqual(self.me("a2")["code"], a["code"])
-        self.assertTrue(self.me("a2")["stations"]["1"])
+        self.assertEqual(self.me("a2")["distance"], "half")
+        self.assertTrue(self.me("a2")["is_new"])            # 關鍵字不會把新好友改成舊好友
 
     def test_unfollow_then_follow(self):
         self.open("a", "U1")
@@ -340,17 +376,15 @@ class TestOAIdentity(Base):
     def test_invite_carried_by_cookie(self):
         a = self.open("a", "U1")
         self.open("b", "U2", ref=a["code"])
-        self.post("b", "/api/station/1", distance="half")
-        self.assertTrue(self.me("a")["stations"]["3"])
-        self.assertTrue(self.me("b")["stations"]["3"])
+        self.assertTrue(self.me("a")["team_qualified"])     # b 是新加入的好友
+        self.assertTrue(self.me("b")["is_new"])
 
     def test_invite_by_manual_code(self):
         a = self.open("a", "U1")
         self.open("b", "U2")
-        self.post("b", "/api/station/1", distance="half")
         self.assertEqual(self.post("b", "/api/ref", code="ZZZZZ").status_code, 400)
         self.assertEqual(self.post("b", "/api/ref", code=a["code"].lower()).status_code, 200)
-        self.assertTrue(self.me("a")["stations"]["3"])
+        self.assertTrue(self.me("a")["team_qualified"])
         self.assertEqual(self.post("b", "/api/ref", code=a["code"]).status_code, 400)
 
     def test_reply_failure_still_registers(self):
@@ -366,7 +400,6 @@ class TestStaffFriendCheck(Base):
 
     def test_staff_confirms_friend(self):
         a = self.join("a", friend=False)
-        self.online3("a")
         self.assertEqual(self.me("a")["rewards"]["gummy"], "locked")
         r = self.staff("/api/staff/friend", code=a["code"])
         self.assertEqual(r.status_code, 200)
