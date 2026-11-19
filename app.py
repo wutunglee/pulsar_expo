@@ -60,6 +60,8 @@ def create_app(test_config=None):
         # 選好距離時主動把補給時間表傳到他的 LINE（每人一則，計入每月訊息則數）
         PUSH_PLAN=env("PUSH_PLAN", "1") == "1",
         PUBLIC_URL=env("PUBLIC_URL", "").rstrip("/"),
+        # 收到 LINE 事件後，原封不動再轉一份到這個網址（原本接 webhook 的系統，例如官網外掛）
+        WEBHOOK_FORWARD_URL=env("WEBHOOK_FORWARD_URL", ""),
         STAFF_PIN=env("STAFF_PIN", ""),
         ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
         COUPON_ABSENT=env("COUPON_ABSENT", ""),   # 沒到攤位的人，活動後看到的官網折扣碼
@@ -216,6 +218,9 @@ def create_app(test_config=None):
         db().execute("UPDATE users SET plan_sent_at=? WHERE id=?", (rules.iso(now()), uid))
 
     def card_link(uid):
+        c = app.config
+        if c["IDENTITY"] == "liff" and c["LIFF_ID"]:
+            return f"https://liff.line.me/{c['LIFF_ID']}"     # LIFF 自己會認人，不用專屬連結
         base = app.config["PUBLIC_URL"] or request.url_root.rstrip("/")
         return f"{base}/t/{card_signer.dumps(uid)}"
 
@@ -329,6 +334,12 @@ def create_app(test_config=None):
         if not line_api.verify_signature(raw, request.headers.get("X-Line-Signature", ""),
                                          c["LINE_CHANNEL_SECRET"]):
             return err("簽章不正確", 401)
+        if c["WEBHOOK_FORWARD_URL"]:
+            try:   # 先轉給原本的接收端，失敗不影響我們自己的處理
+                line_api.forward(c["WEBHOOK_FORWARD_URL"], raw,
+                                 request.headers.get("X-Line-Signature", ""))
+            except line_api.LineError:
+                app.logger.warning("webhook 轉送失敗")
         try:
             events = (request.get_json(silent=True) or {}).get("events") or []
         except AttributeError:
@@ -368,6 +379,11 @@ def create_app(test_config=None):
         name = line_api.get_profile(token, uid) if token and first else ""
         # 加好友事件進來的是新好友；輸入關鍵字的是原本就在的好友
         upsert_user(uid, name, True, is_new=(kind == "follow"))
+        if kind == "follow" and not first:
+            # LIFF 模式下，網頁可能比加好友通知早幾秒建立這個人：剛建立就收到加好友，算新好友
+            u = rules.get_user(db(), uid)
+            if not u["is_new"] and (now() - rules.parse(u["created_at"])).total_seconds() <= 600:
+                db().execute("UPDATE users SET is_new=1 WHERE id=?", (uid,))
         if token and ev.get("replyToken"):
             try:
                 u = rules.get_user(db(), uid)

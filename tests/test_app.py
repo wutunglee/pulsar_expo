@@ -554,12 +554,63 @@ class TestOAIdentity(Base):
             self.assertEqual(self.post("a", "/api/distance", distance="full").status_code, 200)
         self.assertFalse(self.me("a")["plan_sent"])
 
+    def test_webhook_forwarded_to_previous_receiver(self):
+        self.app.config["WEBHOOK_FORWARD_URL"] = "https://old.example/hook"
+        got = []
+        with mock.patch.object(line_api, "forward", side_effect=lambda url, raw, sig: got.append((url, raw, sig))):
+            self.hook(self.ev("follow", "U1"))
+        self.assertEqual(got[0][0], "https://old.example/hook")
+        self.assertIn(b'"U1"', got[0][1])
+        self.assertTrue(got[0][2])
+        with mock.patch.object(line_api, "forward", side_effect=line_api.LineError("down")):
+            self.assertEqual(self.hook(self.ev("follow", "U2")).status_code, 200)     # 轉送失敗不影響
+        self.assertEqual(len(self.sent), 2)
+
+    def test_follow_right_after_page_created_user_counts_as_new(self):
+        # LIFF 的情況：網頁先建立了這個人（當下還不知道是新好友），幾秒後才收到加好友通知
+        self.join("p", new=False, consent=False)
+        conn = __import__("db").connect(self.app.config["DB_PATH"])
+        conn.execute("UPDATE users SET id='U7' WHERE id='dev:p'")
+        self.hook(self.ev("follow", "U7"))
+        self.assertEqual(conn.execute("SELECT is_new FROM users WHERE id='U7'").fetchone()[0], 1)
+        conn.execute("UPDATE users SET id='U8', is_new=0, created_at='2026-11-01T10:00:00+08:00' WHERE id='U7'")
+        self.hook(self.ev("follow", "U8"))                                           # 很久以前就有券的人重新加入
+        self.assertEqual(conn.execute("SELECT is_new FROM users WHERE id='U8'").fetchone()[0], 0)
+
     def test_reply_failure_still_registers(self):
         with mock.patch.object(line_api, "reply", side_effect=line_api.LineError("x")):
             self.assertEqual(self.hook(self.ev("follow", "U9")).status_code, 200)
         self.hook(self.ev("message", "U9", "任務卡"))
         self.c("n").get(self.link_path())
         self.assertTrue(self.me("n")["is_friend"])
+
+
+class TestLiffMode(Base):
+    extra_config = {"IDENTITY": "liff", "LIFF_ID": "2006468465-abcd", "LINE_LOGIN_CHANNEL_ID": "2006468465",
+                    "LINE_CHANNEL_ID": "123", "LINE_CHANNEL_SECRET": "s3cret", "DEV_MODE": False,
+                    "SECRET_KEY": "k" * 32}
+
+    def test_login_with_line_and_reply_points_to_liff(self):
+        with mock.patch.object(line_api, "verify_id_token", return_value=("U1", "小明")), \
+             mock.patch.object(line_api, "is_friend", return_value=False):
+            r = self.c("a").post("/api/session", json={"id_token": "x", "access_token": "y"})
+        self.assertEqual(r.status_code, 200)
+        s = r.get_json()["state"]
+        self.assertEqual((s["name"], s["is_friend"], s["is_new"]), ("小明", False, True))
+        self.assertEqual(self.c("a").get("/api/config").get_json()["friend_check"], "line")
+        sent = []
+        raw = json.dumps({"events": [{"type": "follow", "source": {"type": "user", "userId": "U1"}, "replyToken": "rt"}]}).encode()
+        sig = base64.b64encode(hmac.new(b"s3cret", raw, hashlib.sha256).digest()).decode()
+        with mock.patch.object(line_api, "channel_token", return_value="tok"), \
+             mock.patch.object(line_api, "reply", side_effect=lambda tok, rt, text: sent.append(text)):
+            self.app.test_client().post("/line/webhook", data=raw, headers={"X-Line-Signature": sig, "Content-Type": "application/json"})
+        self.assertIn("https://liff.line.me/2006468465-abcd", sent[0])
+        self.assertNotIn("/t/", sent[0])
+        self.assertTrue(self.me("a")["is_friend"])
+
+    def test_bad_line_token_rejected(self):
+        with mock.patch.object(line_api, "verify_id_token", side_effect=line_api.LineError("bad")):
+            self.assertEqual(self.c("a").post("/api/session", json={"id_token": "x"}).status_code, 401)
 
 
 class TestStaffFriendCheck(Base):

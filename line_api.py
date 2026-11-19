@@ -102,3 +102,13 @@ def push(token, user_id, text):
     body = json.dumps({"to": user_id, "messages": [{"type": "text", "text": text}]}).encode()
     _read(urllib.request.Request(PUSH_URL, data=body, headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json"}))
+
+
+def forward(url, raw_body, signature):
+    """把收到的 webhook 原封不動轉給另一個網址（保留簽章，對方可以自己驗證）。"""
+    req = urllib.request.Request(url, data=raw_body, headers={
+        "Content-Type": "application/json", "X-Line-Signature": signature})
+    try:
+        urllib.request.urlopen(req, timeout=3).read()
+    except Exception as e:  # noqa: BLE001
+        raise LineError(f"轉送失敗：{e}") from e
