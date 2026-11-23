@@ -150,3 +150,23 @@ td:first-child{color:var(--muted);white-space:nowrap;font-weight:700}
 footer{font-size:14px;color:var(--muted);padding:18px 10px 0;line-height:1.6}
 @media (prefers-reduced-motion:reduce){.slot.new{animation:none}button,.btn{transition:none}}
 @media (max-width:360px){h1{font-size:31px}.sheet{padding:24px 16px}.cut{margin:22px -16px}.row{grid-template-columns:1fr}}
+
+/* 券完成後的版面：兌換資訊在前，加碼收合在後 */
+.ticket .done{font-family:var(--serif);font-size:24px;font-weight:900;line-height:1.3;color:var(--stamp)}
+#pickup{border-top:2px solid var(--ink);padding-top:18px}
+.more{display:flex;flex-direction:column;gap:2px;border-top:2px dashed var(--rule);padding-top:22px}
+.more b{font-family:var(--serif);font-size:22px;font-weight:900}
+.more span{font-size:15px;color:var(--muted)}
+details.extra.opt{border-top:1px dotted var(--rule);padding-top:14px;gap:12px}
+.more+details.extra.opt{border-top:0;padding-top:0}
+details.extra.opt>summary{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;cursor:pointer;list-style:none}
+details.extra.opt>summary::-webkit-details-marker{display:none}
+details.extra.opt>summary b{font-size:17px;line-height:1.4}
+details.extra.opt>summary i{font-style:normal;font-size:13px;font-weight:700;color:var(--stamp);border:1.5px solid var(--stamp);padding:0 6px;white-space:nowrap}
+details.extra.opt>summary::after{content:"＋";grid-column:3;font-weight:700;color:var(--muted)}
+details.extra.opt>summary:has(i)::after{content:none}
+details.extra.opt[open]>summary::after{content:"－"}
+details.extra.opt[open]>summary{margin-bottom:12px}
+details.extra.opt>*+*{margin-top:12px}
+#draw details>summary{cursor:pointer;font-size:15px;color:var(--muted);text-decoration:underline}
+#draw details[open]>summary{margin-bottom:10px}
