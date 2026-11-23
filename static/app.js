@@ -141,8 +141,8 @@ async function invite() {
 // ---- 畫面 ----
 
 // 贈品一列：左邊品名，右邊狀態章
-function item(name, sub, status) {
-  const label = {claimed: '已領取', ready: '已保留', out_today: '今日送完', ended: '已結束',
+function item(name, sub, status, text) {
+  const label = text || {claimed: '已領取', ready: '已保留', out_today: '今日送完', ended: '已結束',
                  waiting_partner: '等隊友', locked: '未達成'}[status];
   const cls = status === 'claimed' ? 'done' : status === 'ready' ? 'on' : '';
   return `<li class="item ${cls}"><div><b>${name}</b>${sub ? `<span>${sub}</span>` : ''}</div><i>${label}</i></li>`;
@@ -290,11 +290,13 @@ function render() {
     <section class="ticket" aria-live="polite">
       <p class="for">${esc(S.name) ? esc(S.name) + '，' : ''}已經幫你保留</p>
       <ul class="items">
-        ${item(`${DIST[S.distance]}補給時間表`, '現場依你的配速調整', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
-        ${item('能量軟糖 2 條', '', r.gummy)}
-        ${r.bonus !== 'locked' ? item('加碼：能量軟糖 1 條', '答題加碼', r.bonus) : ''}
-        ${!['locked', 'waiting_partner'].includes(r.crampeace) ? item('加碼：勁速補 1 包', '揪新朋友加碼', r.crampeace) : ''}
-        ${r.prize_gift ? item(esc(CFG.prizes[r.prize].title.replace('送你', '')), '翻牌抽到的', r.prize_gift) : ''}
+        ${S.plan_sent ? item(`${DIST[S.distance]}補給時間表`, '到攤位可以依你的配速調整', 'claimed', '已傳到 LINE')
+          : item(`${DIST[S.distance]}補給時間表`, '在下面可以先看，到攤位依你的配速調整', 'ready', '已備好')}
+        ${item('能量軟糖 2 條', '到攤位就能領', r.gummy)}
+        ${r.prize_gift ? item(esc(CFG.prizes[r.prize].title.replace('送你', '')), '翻牌抽到的，到攤位就能領', r.prize_gift) : ''}
+        ${r.prize && !r.prize_gift && CFG.prizes[r.prize] ? item(esc(CFG.prizes[r.prize].title), '翻牌抽到的現場優惠', r.onsite === 'ended' ? 'ended' : 'ready', r.onsite === 'ended' ? '' : '現場可用') : ''}
+        ${r.bonus !== 'locked' ? item('能量軟糖 1 條', '加碼一：答完 3 題', r.bonus) : ''}
+        ${r.crampeace !== 'locked' ? item('勁速補 1 包', r.crampeace === 'waiting_partner' ? '加碼二：你和隊友都到攤位就能領' : '加碼二：揪新朋友', r.crampeace, r.crampeace === 'waiting_partner' ? '已組隊' : '') : ''}
       </ul>
     </section>
     ${onsiteBlock()}
