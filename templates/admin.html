@@ -24,7 +24,7 @@ const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ?
   const r = await fetch('/api/admin/stats?token=' + encodeURIComponent(token));
   const d = await r.json().catch(() => ({}));
   const out = document.getElementById('out');
-  if (!d.ok) { out.innerHTML = `<p class="msg bad">${esc(d.error || '讀取失敗')}。請在網址後面加上 ?token=管理代碼</p>`; return; }
+  if (!d.ok) { out.innerHTML = `<p class="msg bad">${esc(d.error || '讀取失敗')}</p>`; return; }
   const tile = (label, n) => `<div class="fact"><span>${label}</span><b class="big">${n}</b></div>`;
   out.innerHTML = `
     <div class="tiles">${tile('LINE 好友（有券的）', d.friends)}${tile('其中新加入', d.new_friends)}${tile('已選距離（已保留）', d.reserved)}${tile('到過攤位', d.arrived)}</div>
