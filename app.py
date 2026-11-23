@@ -92,6 +92,11 @@ def create_app(test_config=None):
         raise RuntimeError("REHEARSAL_DAY 要填展期中的一天，例如 2026-12-17")
 
     dbm.init(app.config["DB_PATH"], content.PRODUCTS)
+    _conn = dbm.connect(app.config["DB_PATH"])
+    _purged = rules.purge_stale_hands(_conn, set(content.PRIZES))
+    _conn.close()
+    if _purged:
+        app.logger.warning("清掉 %d 副舊版的牌，這些人可以重新抽", _purged)
     card_signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="card-link")
     pin_fails = {}  # ip -> (次數, 解鎖時間)
 

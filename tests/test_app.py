@@ -531,6 +531,18 @@ class TestCheckout(Base):
         self.clock = at("2026-12-17 13:00")
         self.assertEqual(self.quote("", towel=1).status_code, 400)                # 下架的不能賣
 
+    def test_hands_from_an_older_deck_are_redealt(self):
+        a = self.join("a"); self.join("b"); self.prize("b", "p88")
+        c = self.conn()
+        c.execute("UPDATE draws SET hand='p88,gift,half,p88', pick=1, prize='gift', at='x' WHERE user_id='dev:a'")
+        app2 = create_app({"DEV_MODE": True, "DB_PATH": self.app.config["DB_PATH"], "NOW_FN": lambda: self.clock})
+        left = [r["user_id"] for r in c.execute("SELECT user_id FROM draws")]
+        self.assertEqual(left, ["dev:b"])                                     # 現行的牌不受影響
+        cl = app2.test_client()
+        cl.post("/api/session", json={"dev_user": "a", "dev_friend": True})
+        r = cl.get("/api/me").get_json()["state"]["rewards"]
+        self.assertEqual((r["cards"], r["prize"]), (16, None))                 # 重新發牌、可以再抽
+
     def test_old_database_is_upgraded(self):
         import sqlite3
         import db as dbm

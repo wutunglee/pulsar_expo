@@ -212,6 +212,16 @@ def deal(db, uid, n):
                (uid, ",".join(cards), iso(n)))
 
 
+def purge_stale_hands(db, valid):
+    """獎項改版後，舊牌裡會有現在不存在的獎，畫面翻不開。把這些牌清掉，讓那個人重新發牌、重抽。
+    只要不從 content.PRIZES 刪掉既有的獎，這裡就不會動到任何人。回傳清掉幾副。"""
+    stale = [r["user_id"] for r in db.execute("SELECT user_id, hand FROM draws").fetchall()
+             if any(k not in valid for k in r["hand"].split(","))]
+    for uid in stale:
+        db.execute("DELETE FROM draws WHERE user_id=?", (uid,))
+    return len(stale)
+
+
 def pick_card(db, uid, pick, n):
     """選一張。已經選過就不變。回傳抽到的獎，位置不合法回傳 None。"""
     r = get_draw(db, uid)

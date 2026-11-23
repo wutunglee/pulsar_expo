@@ -223,7 +223,7 @@ function onsiteBlock() {
   }
   const gift = r.prize_gift;
   const how = r.onsite === 'ended' ? '博覽會已結束' : gift === 'claimed' ? '已領取' : `12/17–12/19 到 ${esc(CFG.event.booth)} 攤位出示 QR code`;
-  const faces = r.hand.map((k, i) => `<div class="cardface ${i === r.pick ? 'mine' : ''} ${justDrew ? 'flip' : ''}" style="animation-delay:${i === r.pick ? 0 : 0.35 + i * 0.05}s">${esc(CFG.prizes[k].short).replace(/\n/g, '<br>')}${i === r.pick ? '<i>你選的</i>' : ''}</div>`).join('');
+  const faces = r.hand.map((k, i) => `<div class="cardface ${i === r.pick ? 'mine' : ''} ${justDrew ? 'flip' : ''}" style="animation-delay:${i === r.pick ? 0 : 0.35 + i * 0.05}s">${esc((CFG.prizes[k] || {short: '—'}).short).replace(/\n/g, '<br>')}${i === r.pick ? '<i>你選的</i>' : ''}</div>`).join('');
   return `<section class="extra" id="draw">${head}
       <div class="coupon ${r.onsite === 'ended' ? 'used' : ''}">${esc(p.title)}<small>${how}</small></div>
       <p class="muted">${esc(p.detail)}</p>
