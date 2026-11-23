@@ -116,3 +116,15 @@ python -m unittest discover -s tests
 - 專屬連結等同那個人的登入憑證：拿到連結的人就能開他的券。連結不會過期，訊息裡有提醒不要轉傳。
 - 原本的好友不會收到加好友事件，要靠群發訊息請他們輸入「任務卡」（或點圖文選單送出這三個字）。
 - `IDENTITY=liff`、`FRIEND_CHECK=line` 時，「已加好友」是開卡當下的查詢結果，中途退好友要等下次開卡才更新。
+
+## 2026-11-23 改版：抽獎 8 種獎、現場結帳
+
+- 獎項與張數在 `rules.DECK`（16 張），文字在 `content.PRIZES`。領券後就能抽，不用等到展期。
+- 贈品類的獎（`rules.GIFT_QUOTA`）抽出的張數到上限後，新發的牌改放 88 折。贈品到攤位掃碼時和報到軟糖一起發，每人一次。
+- 計價規則集中在 `rules.price_cart`：有券的人保底 93 折；勁速補現場價 601 不再打折；指定商品特價每人合計 2 件；沒有券的人官網價。
+- 商品清單第一次啟動時從 `content.PRODUCTS` 寫進資料庫，之後在後台「現場販售的商品」改價、上下架、新增。
+- 核銷頁 `/staff`：掃兌換券上的 QR code（或輸入 5 碼、用 LINE 名稱找）→ 一次發放 → 點選商品結帳（現金／LINE Pay）。沒有券的客人用「沒有券的客人結帳」。按錯 10 分鐘內可取消。
+- 後台 `/admin`：營收、每日收款（現金與 LINE Pay 分開）、各獎成效、商品銷量、銷售明細 CSV。
+- 掃碼用 `static/vendor/jsQR.js`，產生 QR code 用 `static/vendor/qrcode.js`，都是隨程式一起放的檔案，不連外。
+- 排練：`.env` 設 `REHEARSAL_DAY=2026-12-17`，活動前就能試報到與結帳；上線前要拿掉並清資料。
+- 更新主機：`git pull` 後重啟兩個服務（`sudo systemctl restart pulsar-expo-prod pulsar-expo-test`）。資料庫會自動升級，不需要另外跑指令。

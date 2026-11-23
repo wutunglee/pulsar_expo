@@ -77,6 +77,27 @@ class Base(unittest.TestCase):
         for q in self.me(who)["quiz"]:
             self.post(who, "/api/quiz", q=q["id"], answer=True)
 
+    def conn(self):
+        return __import__("db").connect(self.app.config["DB_PATH"])
+
+    def prize(self, who, key):
+        """讓某人抽到指定的獎（直接改他那副牌的第一張，再選第一張）。"""
+        self.me(who)                                    # 確保牌已經發了
+        hand = ",".join([key] + ["p88"] * 15)
+        self.conn().execute("UPDATE draws SET hand=? WHERE user_id=?", (hand, "dev:" + who))
+        r = self.post(who, "/api/draw", pick=0).get_json()["state"]["rewards"]
+        self.assertEqual(r["prize"], key)
+
+    def quote(self, code, **cart):
+        return self.staff("/api/staff/quote", code=code,
+                          items=[{"id": k, "qty": v} for k, v in cart.items()])
+
+    def sale(self, code, pay="cash", name="阿志", total=None, **cart):
+        items = [{"id": k, "qty": v} for k, v in cart.items()]
+        if total is None:
+            total = self.staff("/api/staff/quote", code=code, items=items).get_json()["total"]
+        return self.staff("/api/staff/sale", name=name, code=code, items=items, pay=pay, total=total)
+
 
 class TestVoucher(Base):
     def test_consent_required(self):
@@ -237,38 +258,23 @@ class TestCapsAndCoupons(Base):
         self.clock = at("2026-12-18 13:00")
         self.assertEqual(self.checkin("late").get_json()["given"], ["gummy"])
 
-    def test_onsite_coupon_visible_early_recorded_each_use(self):
+    def test_onsite_visible_early_and_ends_after_event(self):
         self.assertEqual(self.join("x", distance=None)["rewards"]["onsite"], "locked")
         a = self.join("a")
         self.assertEqual((a["rewards"]["onsite"], a["rewards"]["prize"]), ("ready", None))
-        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 400)  # 還沒到展期
-        self.clock = at("2026-12-17 13:00")
-        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).get_json()["reason"], "no_prize")
-        self.post("a", "/api/draw", pick=2)
-        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)
-        self.assertEqual(self.staff("/api/staff/onsite", code=a["code"]).status_code, 200)  # 不限次數
-        s = self.me("a")
-        self.assertEqual((s["rewards"]["onsite"], s["rewards"]["onsite_uses"]), ("ready", 2))
-        self.assertTrue(s["arrived"])                       # 結帳也算到場
-        d = self.app.test_client().get("/api/admin/stats?token=adm").get_json()
-        self.assertEqual((d["onsite_uses"], d["onsite_buyers"]), (2, 1))
-        self.assertEqual(self.staff("/api/staff/onsite", code=self.me("x")["code"]).status_code, 409)
-        self.assertEqual(self.checkin("a").get_json()["given"], ["gummy"])   # 軟糖照樣可以領
-        self.join("b")
         self.clock = at("2026-12-20 09:00")
-        self.assertEqual(self.me("b")["rewards"]["onsite"], "ended")
+        self.assertEqual(self.me("a")["rewards"]["onsite"], "ended")
 
     def test_draw_deals_first_then_pick_reveals_real_hand(self):
         self.assertEqual(self.post("x", "/api/draw", pick=0).status_code, 401)
         self.join("n", distance=None)
         self.assertEqual(self.post("n", "/api/draw", pick=0).status_code, 400)   # 還沒選距離
-        a = self.join("a")["rewards"]
-        self.assertEqual((a["cards"], a["prize"]), (8, None))
+        a = self.join("a")["rewards"]                                       # 展期前在家就能抽
+        self.assertEqual((a["cards"], a["prize"]), (16, None))
         self.assertNotIn("hand", a)                                         # 選之前不給牌面
-        conn = __import__("db").connect(self.app.config["DB_PATH"])
-        stored = conn.execute("SELECT hand FROM draws WHERE user_id='dev:a'").fetchone()["hand"].split(",")
-        self.assertEqual(sorted(stored), sorted(["p88"] * 4 + ["gift"] * 3 + ["half"]))
-        for bad in (8, -1, "3", None, True):
+        stored = self.conn().execute("SELECT hand FROM draws WHERE user_id='dev:a'").fetchone()["hand"].split(",")
+        self.assertEqual(sorted(stored), sorted(k for k, n in rules.DECK for _ in range(n)))
+        for bad in (16, -1, "3", None, True):
             self.assertEqual(self.post("a", "/api/draw", pick=bad).status_code, 400, bad)
         r = self.post("a", "/api/draw", pick=5).get_json()["state"]["rewards"]
         self.assertEqual((r["hand"], r["pick"], r["prize"]), (stored, 5, stored[5]))
@@ -278,14 +284,26 @@ class TestCapsAndCoupons(Base):
         self.assertNotIn("DECK", cfg)
 
     def test_deck_distribution(self):
-        conn = __import__("db").connect(self.app.config["DB_PATH"])
-        for i in range(800):
-            conn.execute("INSERT INTO users(id, name, code, created_at) VALUES(?,?,?,?)",
-                         (f"s{i}", "", f"S{i:04d}", "x"))
-            rules.deal(conn, f"s{i}", self.clock)
-            rules.pick_card(conn, f"s{i}", i % 8, self.clock)
+        conn = self.conn()
+        with mock.patch.dict(rules.GIFT_QUOTA, {k: 10 ** 6 for k in rules.GIFT_QUOTA}):
+            for i in range(1600):
+                conn.execute("INSERT INTO users(id, name, code, created_at) VALUES(?,?,?,?)",
+                             (f"s{i}", "", f"S{i:04d}", "x"))
+                rules.deal(conn, f"s{i}", self.clock)
+                rules.pick_card(conn, f"s{i}", i % 16, self.clock)
         got = dict(conn.execute("SELECT prize, COUNT(*) FROM draws GROUP BY prize").fetchall())
-        self.assertTrue(340 < got["p88"] < 460 and 240 < got["gift"] < 360 and 60 < got["half"] < 140, got)
+        self.assertEqual(set(got), {k for k, _ in rules.DECK})
+        self.assertTrue(340 < got["p88"] < 460 and 240 < got["gum200"] < 360
+                        and 60 < got["half"] < 140 and 60 < got["g_noxx"] < 140, got)
+
+    def test_gift_quota_stops_new_gift_cards(self):
+        with mock.patch.dict(rules.GIFT_QUOTA, {"g_gummy": 1}):
+            self.join("a")
+            self.prize("a", "g_gummy")                                      # 名額用掉
+            self.join("b")
+            hand = self.conn().execute("SELECT hand FROM draws WHERE user_id='dev:b'").fetchone()["hand"].split(",")
+        self.assertEqual((len(hand), hand.count("g_gummy"), hand.count("p88")), (16, 0, 6))
+        self.assertEqual(hand.count("g_cramp"), 1)                          # 其他贈品不受影響
 
     def test_absent_coupon_only_after_event_for_no_shows(self):
         self.join("came"); self.join("missed"); self.join("nofriend", friend=False)
@@ -330,10 +348,10 @@ class TestUndoAndStaffName(Base):
 
     def test_undo_time_limit_and_order(self):
         a = self.join("a")
-        self.post("a", "/api/draw", pick=0)
+        self.prize("a", "p88")
         self.clock = at("2026-12-17 13:00")
         c1 = self.staff("/api/staff/checkin", name="小美", code=a["code"]).get_json()["log_id"]
-        o1 = self.staff("/api/staff/onsite", name="小美", code=a["code"]).get_json()["log_id"]
+        o1 = self.sale(a["code"], name="小美", plum=1).get_json()["log_id"]
         self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=c1).status_code, 409)   # 後面還有一筆
         flags = {i["id"]: i["can_undo"] for i in self.staff_get("/api/staff/recent", name="小美")["items"]}
         self.assertEqual((flags[c1], flags[o1]), (False, True))                 # 畫面只讓最新那筆可取消
@@ -343,12 +361,12 @@ class TestUndoAndStaffName(Base):
         self.clock = at("2026-12-17 13:11")
         self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=c1).status_code, 409)   # 超過 10 分鐘
 
-    def test_undo_onsite_that_marked_arrival(self):
+    def test_undo_sale_that_marked_arrival(self):
         a = self.join("a")
-        self.post("a", "/api/draw", pick=3)
+        self.prize("a", "p88")
         self.clock = at("2026-12-17 13:00")
-        o = self.staff("/api/staff/onsite", name="小美", code=a["code"]).get_json()["log_id"]
-        self.assertTrue(self.me("a")["arrived"])
+        o = self.sale(a["code"], name="小美", plum=1).get_json()["log_id"]
+        self.assertTrue(self.me("a")["arrived"])                         # 結帳也算到場
         self.staff("/api/staff/undo", name="小美", log_id=o)
         self.assertFalse(self.me("a")["arrived"])
 
@@ -359,6 +377,198 @@ class TestUndoAndStaffName(Base):
         self.assertIsNone(self.staff("/api/staff/checkin", name="小美", code=a["code"]).get_json()["log_id"])
         self.assertEqual(len(self.staff_get("/api/staff/recent", name="小美")["items"]), 1)
 
+
+
+class TestCheckout(Base):
+    """結帳計價與銷售紀錄。"""
+
+    P = {p["id"]: p for p in __import__("content").PRODUCTS}
+
+    def cart(self, prize=None, member=True, used=0, **items):
+        return rules.price_cart([(self.P[k], v) for k, v in items.items()], prize, member, used)
+
+    def test_walkin_pays_list_price_with_web_multibuy(self):
+        self.assertEqual(self.cart(member=False, noxx_e=1, cramp=1)["total"], 680 + 780)
+        self.assertEqual(self.cart(member=False, cramp=2)["total"], 601 * 2)
+
+    def test_member_baseline_and_crampeace_fixed(self):
+        c = self.cart(noxx_e=1, cramp=1)
+        self.assertEqual([(l["amount"], l["how"]) for l in c["lines"]], [(632, "93 折"), (601, "現場價")])
+        self.assertEqual(self.cart(prize="g_gummy", noxx_e=1)["total"], 632)      # 贈品獎買東西是 93 折
+
+    def test_p88_needs_two_and_never_discounts_crampeace(self):
+        self.assertEqual(self.cart("p88", noxx_e=1)["total"], 632)
+        self.assertEqual(self.cart("p88", noxx_e=1, plum=1)["total"], 598 + 703)
+        self.assertEqual(self.cart("p88", noxx_e=1, cramp=1)["total"], 598 + 601)  # 勁速補算件數、不打折
+
+    def test_half_cheapest_one_and_never_worse_than_baseline(self):
+        c = self.cart("half", noxx_e=1, gum_m=1)
+        self.assertEqual((c["total"], c["lines"][1]["how"]), (680 + 125, "半價"))
+        self.assertEqual(self.cart("half", noxx_e=1)["total"], 632)
+        self.assertEqual(self.cart("half", spm=8)["total"], 2120 * 8)             # 件數多時 93 折比較划算
+        self.assertEqual(self.cart("half", cramp=2)["total"], 1202)               # 只有勁速補就沒得折
+
+    def test_special_price_capped_per_person(self):
+        c = self.cart("gum200", gum_m=2, gum_pc=1)
+        self.assertEqual((c["total"], sum(l["special"] for l in c["lines"])), (200 + 200 + 232, 2))
+        self.assertEqual(self.cart("gum200", used=1, gum_m=3)["total"], 200 + 232 + 232)
+        self.assertEqual(self.cart("gum200", used=2, gum_m=1)["total"], 232)
+        self.assertEqual(self.cart("flask100", flask=1, noxx_e=1)["total"], 100 + 632)   # 其他東西 93 折
+        self.assertEqual(self.cart("flask100", gum_m=1)["total"], 232)                   # 沒買指定商品
+
+    def test_deal500_covers_crampeace_and_noxx_best_saving_first(self):
+        c = self.cart("deal500", cramp=2, noxx_p=1)
+        self.assertEqual(c["total"], 500 + 500 + 601)
+        self.assertEqual({l["id"]: l["special"] for l in c["lines"]}, {"cramp": 1, "noxx_p": 1})
+
+    def test_sale_records_and_tracks_special_quota(self):
+        a = self.join("a")
+        self.prize("a", "flask100")
+        self.assertEqual(self.sale(a["code"], total=100, flask=1).status_code, 400)       # 還沒到展期
+        self.clock = at("2026-12-17 13:00")
+        q = self.quote(a["code"], flask=1, plum=1).get_json()
+        self.assertEqual((q["member"], q["prize"], q["total"], q["list_total"]), (True, "flask100", 100 + 743, 1098))
+        r = self.sale(a["code"], total=999, flask=1, plum=1)                             # 畫面金額不對
+        self.assertEqual((r.status_code, r.get_json()["reason"], r.get_json()["total"]), (409, "changed", 843))
+        self.assertEqual(self.me("a")["rewards"]["onsite_uses"], 0)
+        r = self.sale(a["code"], pay="linepay", flask=1, plum=1).get_json()
+        self.assertEqual((r["total"], r["user"]["rewards"]["special_left"]), (843, 1))
+        self.assertTrue(self.me("a")["arrived"])
+        r2 = self.sale(a["code"], flask=2).get_json()                                    # 只剩 1 個特價
+        self.assertEqual((r2["total"], r2["user"]["rewards"]["special_left"]), (100 + 278, 0))
+        self.assertEqual(self.quote(a["code"], flask=1).get_json()["total"], 278)
+        t = self.staff_get("/api/staff/today")["sales"]
+        self.assertEqual((t["n"], t["total"], t["cash"], t["linepay"]), (2, 1221, 378, 843))
+        self.assertEqual(self.staff("/api/staff/undo", log_id=r2["log_id"]).status_code, 200)
+        self.assertEqual(self.me("a")["rewards"]["special_left"], 1)                     # 取消後額度還回去
+        d = self.app.test_client().get("/api/admin/stats?token=adm").get_json()
+        self.assertEqual((d["sales_n"], d["sales_total"], d["buyers"]), (1, 843, 1))
+        self.assertEqual(d["by_prize"][0], {"prize": "flask100", "drawn": 1, "gifts": 0, "buyers": 1, "revenue": 843})
+        self.assertEqual({x["name"]: x["qty"] for x in d["by_product"]}, {"搖滾話梅 沖泡飲": 1, "軟水壺": 1})
+        csv_ = self.app.test_client().get("/api/admin/sales.csv?token=adm").get_data(as_text=True)
+        self.assertIn("LINE Pay", csv_); self.assertIn("已取消", csv_); self.assertIn("100 元", csv_)
+
+    def test_sale_needs_payment_method_and_valid_cart(self):
+        a = self.join("a")
+        self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.sale(a["code"], pay="card", total=743, plum=1).status_code, 400)
+        for items in ([], [{"id": "nope", "qty": 1}], [{"id": "plum", "qty": 0}], [{"id": "plum", "qty": "2"}], "x"):
+            r = self.staff("/api/staff/sale", code=a["code"], items=items, pay="cash", total=0)
+            self.assertEqual(r.status_code, 400, items)
+        self.assertEqual(self.staff("/api/staff/quote", code="ZZZZZ", items=[{"id": "plum", "qty": 1}]).status_code, 404)
+
+    def test_walkin_sale_without_voucher(self):
+        self.clock = at("2026-12-17 13:00")
+        q = self.quote("", cramp=1).get_json()
+        self.assertEqual((q["member"], q["total"]), (False, 780))
+        r = self.sale("", name="小美", cramp=2).get_json()
+        self.assertEqual((r["total"], r["user"]), (1202, None))
+        item = self.staff_get("/api/staff/recent", name="小美")["items"][0]
+        self.assertEqual((item["name"], item["code"], item["can_undo"]), ("散客", "", True))
+        self.assertEqual(self.staff("/api/staff/undo", name="小美", log_id=r["log_id"]).status_code, 200)
+        self.assertEqual(self.staff_get("/api/staff/today")["sales"]["n"], 0)
+
+    def test_code_without_voucher_gets_list_price(self):
+        x = self.join("x", distance=None)                    # 加了好友但還沒選距離＝還沒領券
+        self.clock = at("2026-12-17 13:00")
+        q = self.quote(x["code"], noxx_e=1).get_json()
+        self.assertEqual((q["member"], q["total"]), (False, 680))
+
+    def test_undrawn_member_gets_baseline(self):
+        a = self.join("a")
+        self.clock = at("2026-12-17 13:00")
+        q = self.quote(a["code"], noxx_e=2).get_json()
+        self.assertEqual((q["member"], q["prize"], q["total"]), (True, None, 632 * 2))
+
+    def test_gift_prize_handed_once_with_checkin(self):
+        a = self.join("a")
+        self.prize("a", "g_noxx")
+        self.assertEqual(self.me("a")["rewards"]["prize_gift"], "ready")
+        self.clock = at("2026-12-17 13:00")
+        v = self.staff("/api/staff/lookup", code=a["code"]).get_json()["user"]
+        self.assertEqual((v["give"], "氮能雙效膠" in v["gift_text"]), (["gummy", "prize"], True))
+        r = self.checkin("a").get_json()
+        self.assertEqual((r["given"], r["user"]["give"]), (["gummy", "prize"], []))
+        self.assertEqual(self.me("a")["rewards"]["prize_gift"], "claimed")
+        self.assertEqual(self.checkin("a").get_json()["given"], [])               # 第二次掃不會再給
+        self.assertEqual(self.staff("/api/staff/undo", log_id=r["log_id"]).status_code, 200)
+        self.assertEqual(self.me("a")["rewards"]["prize_gift"], "ready")
+        self.join("b"); self.prize("b", "p88")
+        self.assertIsNone(self.me("b")["rewards"]["prize_gift"])                   # 折扣類沒有贈品
+
+    def test_gift_drawn_after_first_visit_can_be_collected_later(self):
+        a = self.join("a")
+        self.join("late"); self.prize("late", "g_cramp")
+        self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.checkin("a").get_json()["given"], ["gummy"])
+        self.prize("a", "g_cramp")                                               # 到了現場才翻牌
+        self.assertEqual(self.checkin("a").get_json()["given"], ["prize"])
+        self.clock = at("2026-12-20 09:00")
+        self.assertEqual(self.me("late")["rewards"]["prize_gift"], "ended")       # 沒來的人，贈品作廢
+
+    def test_search_by_name(self):
+        self.join("王小明"); self.join("陳大華")
+        r = self.staff("/api/staff/search", q="小明").get_json()["items"]
+        self.assertEqual([x["name"] for x in r], ["王小明"])
+        self.assertEqual(self.staff("/api/staff/search", q="").status_code, 400)
+        self.assertEqual(self.staff("/api/staff/search", pin="0", q="小明").status_code, 401)
+
+    def test_admin_edits_products(self):
+        cl = self.app.test_client()
+        items = cl.get("/api/admin/products?token=adm").get_json()["items"]
+        self.assertEqual(len(items), 18)
+        self.assertEqual(cl.get("/api/admin/products?token=no").status_code, 401)
+        plum = next(p for p in items if p["id"] == "plum")
+        r = cl.post("/api/admin/product?token=adm", json={**plum, "price": 750, "active": True})
+        self.assertEqual(r.status_code, 200)
+        r = cl.post("/api/admin/product?token=adm", json={**next(p for p in items if p["id"] == "towel"), "active": False})
+        r = cl.post("/api/admin/product?token=adm", json={"name": "帶勁瓶", "cat": "配件", "price": 199})
+        self.assertEqual(len(r.get_json()["items"]), 19)
+        self.assertEqual(cl.post("/api/admin/product?token=adm", json={"name": "", "price": 10}).status_code, 400)
+        self.assertEqual(cl.post("/api/admin/product?token=adm", json={"name": "x", "price": "10"}).status_code, 400)
+        shown = {p["name"]: p["price"] for p in self.staff_get("/api/staff/products")["items"]}
+        self.assertEqual((shown["搖滾話梅 沖泡飲"], shown["帶勁瓶"], "冰感瞬涼巾" in shown), (750, 199, False))
+        self.clock = at("2026-12-17 13:00")
+        self.assertEqual(self.quote("", towel=1).status_code, 400)                # 下架的不能賣
+
+    def test_old_database_is_upgraded(self):
+        import sqlite3
+        import db as dbm
+        path = os.path.join(self.tmp.name, "old.db")
+        c = sqlite3.connect(path)
+        c.executescript("""
+            CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', code TEXT NOT NULL UNIQUE,
+                is_friend INTEGER NOT NULL DEFAULT 0, is_new INTEGER NOT NULL DEFAULT 0, distance TEXT,
+                invited_by TEXT, arrived_at TEXT, plan_sent_at TEXT, consent_at TEXT, created_at TEXT NOT NULL);
+            CREATE TABLE staff_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, staff TEXT NOT NULL,
+                action TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                detail TEXT NOT NULL DEFAULT '{}', undone_at TEXT);
+            INSERT INTO users(id, code, created_at) VALUES('u1', 'AAAAA', 'x');
+            INSERT INTO staff_log(at, staff, action, user_id) VALUES('t', '阿志', 'checkin', 'u1');
+        """)
+        c.commit(); c.close()
+        dbm.init(path, __import__("content").PRODUCTS)
+        conn = dbm.connect(path)
+        cols = {r["name"]: r["notnull"] for r in conn.execute("PRAGMA table_info(staff_log)")}
+        self.assertEqual(cols["user_id"], 0)
+        self.assertEqual(conn.execute("SELECT staff FROM staff_log").fetchone()["staff"], "阿志")
+        conn.execute("INSERT INTO staff_log(at, staff, action, user_id) VALUES('t', '阿志', 'sale', NULL)")
+        self.assertEqual(conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"], 18)
+
+    def test_rehearsal_day_lets_staff_try_before_the_event(self):
+        app = create_app({"DEV_MODE": True, "DB_PATH": os.path.join(self.tmp.name, "r.db"),
+                          "STAFF_PIN": "4321", "REHEARSAL_DAY": "2026-12-18"})
+        c = app.test_client()
+        c.post("/api/session", json={"dev_user": "a", "dev_friend": True})
+        c.post("/api/consent"); c.post("/api/distance", json={"distance": "half"})
+        code = c.get("/api/me").get_json()["state"]["code"]
+        r = app.test_client().post("/api/staff/checkin", json={"code": code},
+                                   headers={"X-Staff-Pin": "4321", "X-Staff-Name": "a"})
+        self.assertEqual(r.get_json()["given"], ["gummy"])
+        self.assertTrue(c.get("/api/config").get_json()["rehearsal"])
+        with self.assertRaises(RuntimeError):
+            create_app({"DEV_MODE": True, "DB_PATH": os.path.join(self.tmp.name, "r2.db"),
+                        "REHEARSAL_DAY": "2026-11-23"})
 
 class TestAdminExports(Base):
     def test_participants_csv(self):

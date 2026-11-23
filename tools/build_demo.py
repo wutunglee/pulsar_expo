@@ -33,6 +33,7 @@ const TOOLS = new URLSearchParams(location.search).has('test');
 const DEMO = {cfg: %s, pool: %s};
 if (!TOOLS) DEMO.cfg.reviewed = true;      // 試用畫面不顯示草稿標示
 let JOINED = false;
+const GIFTS = %s, SPECIALS = %s;
 const D = {consent: false, distance: null, ans: {}, asked: false, sent: false, partner: false,
            partnerNew: true, partnerArrived: false, arrived: false, got: {}, uses: 0, prize: null, pick: null, hand: null, eventDay: false, over: false,
            ids: [...DEMO.pool.keys()].sort(() => Math.random() - .5).slice(0, 3)};
@@ -50,7 +51,9 @@ function demoState() {
       gummy: D.got.gummy ? 'claimed' : !D.distance ? 'locked' : stock,
       bonus: D.got.bonus ? 'claimed' : !quizDone ? 'locked' : stock,
       crampeace: D.got.crampeace ? 'claimed' : !qualified ? 'locked' : !(D.arrived && D.partnerArrived) ? 'waiting_partner' : stock,
-      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', onsite_uses: D.uses, cards: D.hand ? D.hand.length : 0, prize: D.prize, ...(D.prize ? {pick: D.pick, hand: D.hand} : {}),
+      onsite: !D.distance ? 'locked' : D.over ? 'ended' : 'ready', prize_gift: GIFTS.includes(D.prize) ? (D.got.prize ? 'claimed' : D.over ? 'ended' : 'ready') : null,
+      special_left: SPECIALS.includes(D.prize) ? Math.max(0, 2 - D.uses) : null,
+      onsite_uses: D.uses, cards: D.hand ? D.hand.length : 0, prize: D.prize, ...(D.prize ? {pick: D.pick, hand: D.hand} : {}),
       absent: absent, absent_code: absent ? 'EV-TPEMARA-2612' : '', absent_text: '滿 2,000 元折 250 元，2027/1/19 前有效'},
     today: {is_event_day: D.eventDay, over: D.over, left: D.eventDay ? {gummy: 150, bonus: 150, crampeace: 80} : null}};
 }
@@ -88,6 +91,7 @@ function demoDo(a) {
     D.arrived = true;
     const s = demoState().rewards;
     ['gummy', 'bonus', 'crampeace'].forEach(k => { if (s[k] === 'ready') D.got[k] = true; });
+    if (s.prize_gift === 'ready') D.got.prize = true;
     tip.textContent = first ? '工作人員按了「報到並發放」。' : Object.keys(D.got).length > before ? '工作人員發了新達成的加碼。' : '目前沒有新的東西可以領。';
   }
   if (a === 'mate') {
@@ -96,7 +100,7 @@ function demoDo(a) {
   }
   if (a === 'pay') {
     if (!D.eventDay) { tip.textContent = '現場優惠券只能在博覽會當天用，先切到博覽會當天。'; return; }
-    if (!D.prize) { tip.textContent = '先在券上「現場優惠」選一張牌。'; return; }
+    if (!D.prize) { tip.textContent = '先在券上翻一張牌。'; return; }
     D.uses += 1; D.arrived = true;
   }
   if (a === 'over') { D.eventDay = false; D.over = true; }
@@ -112,6 +116,7 @@ document.addEventListener('click', e => {
 });
 if (TOOLS) document.getElementById('demoBar').hidden = false;
 """ % (json.dumps(cfg, ensure_ascii=False), json.dumps(content.QUIZ, ensure_ascii=False),
+       json.dumps(list(rules.GIFT_QUOTA)), json.dumps(list(rules.SPECIAL)),
        json.dumps([k for k, c in rules.DECK for _ in range(c)]))
 
 js = read("static/app.js")
@@ -142,6 +147,8 @@ html = html.replace('<div class="wrap">', """<div class="wrap">
     <button onclick="demoDo('over')">活動結束</button>
     <button onclick="demoDo('reset')">重來</button></div>
     <p id="demoTip" style="color:#ffb199;margin-top:8px"></p></div>""", 1)
+html = html.replace('<script src="/static/vendor/qrcode.js"></script>',
+                    "<script>\n" + read("static/vendor/qrcode.js") + "\n</script>")
 html = html.replace('<script src="/static/app.js"></script>', "<script>\n" + js + "\n</script>")
 open(sys.argv[1], "w", encoding="utf-8").write(html)
 print("ok", len(html))

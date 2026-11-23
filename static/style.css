@@ -82,3 +82,31 @@ footer{font-size:14px;color:var(--muted)}
 [hidden]{display:none!important}
 @media (prefers-reduced-motion:reduce){button,.track i{transition:none}}
 @media (max-width:360px){h1{font-size:29px}.row,.facts{grid-template-columns:1fr}}
+
+/* 核銷頁：結帳、掃碼 */
+button.small{font-size:15px;padding:10px 8px;color:var(--muted)}
+.give{font-size:24px;line-height:1.5;font-weight:700}
+details summary{cursor:pointer;font-size:15px;padding:4px 0}
+details>.reward{margin-top:8px}
+.prods{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.prods button{text-align:left;padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-height:64px;justify-content:center}
+.prods button span{font-size:16px;line-height:1.3}
+.prods button small{font-size:14px;color:var(--muted);font-weight:500;font-variant-numeric:tabular-nums}
+.prods button.sel small{color:var(--online)}
+.cart{border:1px solid var(--line);border-radius:14px;padding:4px 14px}
+.cartline{display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.cartline>div:first-child{grid-column:1/-1}
+.cartline b{font-size:16px}
+.cartline span{display:block;font-size:14px;color:var(--muted)}
+.cartline .amt{text-align:right;font-variant-numeric:tabular-nums}
+.qty{display:flex;align-items:center;gap:8px}
+.qty button{width:44px;height:44px;padding:0;border-radius:12px;font-size:20px}
+.qty b{min-width:20px;text-align:center;font-variant-numeric:tabular-nums}
+.total{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:12px 0}
+.total span{font-size:15px;color:var(--muted)}
+.total b{font-size:34px;font-weight:900;font-variant-numeric:tabular-nums}
+.scanner{position:fixed;inset:0;z-index:10;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:20px}
+.scanner video{width:100%;max-width:480px;max-height:65vh;border-radius:16px;background:#111;object-fit:cover}
+.scanner p{font-size:17px;text-align:center}
+.scanner button{min-width:160px}
+select{font:inherit;font-size:17px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px;width:100%}

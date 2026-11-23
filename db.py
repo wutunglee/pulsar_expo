@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS staff_log (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     at        TEXT NOT NULL,
     staff     TEXT NOT NULL,
-    action    TEXT NOT NULL,              -- checkin / onsite / friend
-    user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action    TEXT NOT NULL,              -- checkin / sale / friend
+    user_id   TEXT REFERENCES users(id) ON DELETE CASCADE,  -- 散客結帳時是 NULL
     detail    TEXT NOT NULL DEFAULT '{}', -- JSON：這次實際改了什麼，取消時照這個還原
     undone_at TEXT
 );
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS onsite_uses (
     at      TEXT NOT NULL
 );
 
--- reward: gummy（報到軟糖）/ bonus（答題加碼）/ crampeace
+-- reward: gummy（報到軟糖）/ bonus（答題加碼）/ crampeace / prize（抽到的贈品）
 CREATE TABLE IF NOT EXISTS claims (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     reward  TEXT NOT NULL,
@@ -74,6 +74,45 @@ CREATE TABLE IF NOT EXISTS claims (
     PRIMARY KEY (user_id, reward)
 );
 CREATE INDEX IF NOT EXISTS idx_claims_day ON claims(reward, day);
+
+-- 現場販售的商品。價格、上下架在後台改。
+CREATE TABLE IF NOT EXISTS products (
+    id     TEXT PRIMARY KEY,
+    name   TEXT NOT NULL,
+    cat    TEXT NOT NULL DEFAULT '',
+    tag    TEXT NOT NULL DEFAULT '',      -- gummy / flask / cramp / noxx：抽獎特價對應的類別
+    price  INTEGER NOT NULL,              -- 官網價
+    onsite INTEGER,                       -- 有券的人的現場價（設了就不再打折）
+    multi  INTEGER,                       -- 沒有券的人買 2 件以上的單價
+    active INTEGER NOT NULL DEFAULT 1,
+    sort   INTEGER NOT NULL DEFAULT 0
+);
+
+-- 現場結帳：一筆一列，明細在 sale_items。取消的保留、標 voided_at。
+CREATE TABLE IF NOT EXISTS sales (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL,
+    day        TEXT NOT NULL,
+    staff      TEXT NOT NULL,
+    user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,   -- 散客是 NULL
+    prize      TEXT,                      -- 結帳當下套用的獎
+    pay        TEXT NOT NULL,             -- cash / linepay
+    total      INTEGER NOT NULL,
+    list_total INTEGER NOT NULL,          -- 官網價合計，用來看讓利多少
+    voided_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sales_user ON sales(user_id);
+CREATE TABLE IF NOT EXISTS sale_items (
+    sale_id     INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    product_id  TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    qty         INTEGER NOT NULL,
+    unit_list   INTEGER NOT NULL,
+    amount      INTEGER NOT NULL,         -- 這一列實收
+    special_qty INTEGER NOT NULL DEFAULT 0,  -- 其中用抽獎特價的件數（計入每人上限）
+    how         TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
 
 """
 
@@ -90,7 +129,46 @@ def connect(path):
     return conn
 
 
-def init(path):
+def migrate(conn):
+    """舊資料庫升級。staff_log.user_id 原本不能是空的，散客結帳需要它可以空。"""
+    cols = {r["name"]: r for r in conn.execute("PRAGMA table_info(staff_log)")}
+    if cols["user_id"]["notnull"]:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.executescript("""
+            BEGIN;
+            ALTER TABLE staff_log RENAME TO staff_log_old;
+            CREATE TABLE staff_log (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                at        TEXT NOT NULL,
+                staff     TEXT NOT NULL,
+                action    TEXT NOT NULL,
+                user_id   TEXT REFERENCES users(id) ON DELETE CASCADE,
+                detail    TEXT NOT NULL DEFAULT '{}',
+                undone_at TEXT
+            );
+            INSERT INTO staff_log SELECT id, at, staff, action, user_id, detail, undone_at
+                FROM staff_log_old;
+            DROP TABLE staff_log_old;
+            CREATE INDEX IF NOT EXISTS idx_staff_log_user ON staff_log(user_id);
+            COMMIT;
+        """)
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def seed_products(conn, products):
+    """商品表是空的才寫入預設清單；之後以資料庫為準。"""
+    if conn.execute("SELECT 1 FROM products LIMIT 1").fetchone():
+        return
+    for i, p in enumerate(products):
+        conn.execute(
+            "INSERT INTO products(id, name, cat, tag, price, onsite, multi, sort) VALUES(?,?,?,?,?,?,?,?)",
+            (p["id"], p["name"], p.get("cat", ""), p.get("tag", ""), p["price"],
+             p.get("onsite"), p.get("multi"), i))
+
+
+def init(path, products=()):
     conn = connect(path)
     conn.executescript(SCHEMA)
+    migrate(conn)
+    seed_products(conn, products)
     conn.close()

@@ -25,28 +25,47 @@
         <div class="fact"><span>軟糖 今日剩餘</span><b class="big" id="gLeft">–</b><span id="gCap"></span></div>
         <div class="fact"><span>加碼軟糖 今日剩餘</span><b class="big" id="bLeft">–</b><span id="bCap"></span></div>
         <div class="fact"><span>勁速補 今日剩餘</span><b class="big" id="cLeft">–</b><span id="cCap"></span></div>
+        <div class="fact"><span>今日收款</span><b class="big" id="sTotal">–</b><span id="sSplit"></span></div>
       </div>
     </section>
 
     <section class="panel">
-      <label for="code">兌換代碼（兌換券上的 5 碼）
+      <button class="primary" id="scan">掃客人的 QR code</button>
+      <label for="code">或輸入兌換代碼（5 碼）
         <input id="code" autocomplete="off" autocapitalize="characters" maxlength="5" style="font-size:26px;letter-spacing:.18em;text-transform:uppercase"></label>
-      <button class="primary" id="lookup">查詢</button>
+      <button id="lookup">查詢</button>
+      <div class="row2">
+        <button id="byName" class="small">用 LINE 名稱找</button>
+        <button id="walkin" class="small">沒有券的客人結帳</button>
+      </div>
+      <div id="nameBox" hidden>
+        <div class="codebox"><input id="nameQ" placeholder="LINE 顯示名稱的一部分" autocomplete="off" aria-label="LINE 名稱"><button id="nameGo">找</button></div>
+        <div id="nameOut" class="stack" style="margin-top:10px"></div>
+      </div>
       <p class="msg" id="msg" hidden></p>
     </section>
 
     <section class="panel" id="user" hidden></section>
+    <section class="panel" id="shop" hidden></section>
 
     <section class="panel" id="recentBox" hidden>
       <div class="progress-top"><h3>我最近的操作</h3><span class="muted" id="whoami"></span></div>
-      <p class="note">按錯了可以在 <span id="undoMin">10</span> 分鐘內取消。取消後，發出去的東西請記得收回。</p>
+      <p class="note">按錯了可以在 <span id="undoMin">10</span> 分鐘內取消。取消後，發出去的東西請記得收回，收的錢請退還。</p>
       <div id="recent"></div>
     </section>
   </div>
 </div>
+
+<div id="scanner" class="scanner" hidden>
+  <video id="cam" playsinline muted></video>
+  <p id="scanMsg">把客人手機上的 QR code 對準畫面</p>
+  <button id="scanStop">取消</button>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = n => Number(n || 0).toLocaleString('en-US');
 let PIN = '', WHO = '', FRIEND_CHECK = '';
 try { PIN = sessionStorage.getItem('pin') || ''; WHO = localStorage.getItem('staffName') || ''; } catch (e) {}
 
@@ -63,43 +82,55 @@ async function today() {
   const r = await call('/api/staff/today');
   if (!r.ok) return false;
   FRIEND_CHECK = r.friend_check;
-  $('day').textContent = r.day + (r.is_event_day ? '' : '（非展期，不能報到）');
+  $('day').textContent = r.day + (r.rehearsal ? '（排練模式）' : r.is_event_day ? '' : '（非展期，不能報到與結帳）');
   $('gLeft').textContent = r.gummy.left; $('gCap').textContent = '共 ' + r.gummy.cap + ' 份';
   $('bLeft').textContent = r.bonus.left; $('bCap').textContent = '共 ' + r.bonus.cap + ' 條';
   $('cLeft').textContent = r.crampeace.left; $('cCap').textContent = '共 ' + r.crampeace.cap + ' 包';
+  $('sTotal').textContent = money(r.sales.total);
+  $('sSplit').textContent = `${r.sales.n} 筆｜現金 ${money(r.sales.cash)}｜LINE Pay ${money(r.sales.linepay)}`;
   return true;
 }
 
 const DIST = {half: '半馬', full: '全馬', cheer: '陪跑加油'};
-const GIVE = {gummy: '軟糖 2 條', bonus: '加碼軟糖 1 條', crampeace: '勁速補 1 包'};
-const ONSITE = {locked: '還沒領券', ended: '活動已結束'};
-let PRIZES = {}, PRIZE_BASE = '';
-fetch('/api/config').then(r => r.json()).then(c => { PRIZES = c.prizes; PRIZE_BASE = c.prize_base; });
+const GIVE = {gummy: '軟糖 2 條', bonus: '答題加碼：軟糖 1 條', crampeace: '揪朋友：勁速補 1 包'};
 const ST = {locked: '未達成', waiting_partner: '等隊友到攤位', ready: '可以發', out_today: '今日已送完', ended: '活動已結束', claimed: '已領過'};
+const PAY = {cash: '現金', linepay: 'LINE Pay'};
+let PRIZES = {}, PRIZE_BASE = '', PRODUCTS = [];
+fetch('/api/config').then(r => r.json()).then(c => { PRIZES = c.prizes; PRIZE_BASE = c.prize_base; });
+const giveName = (k, u) => k === 'prize' ? (u.gift_text || '抽獎贈品') : GIVE[k];
+
+// ---- 客人 ----
+let CUR = null;       // 目前查到的客人；null 表示沒有（或散客結帳）
 
 function show(u, note) {
+  CUR = u;
   const r = u.rewards;
-  const row = (key, name) => `<div class="reward ${r[key] === 'ready' ? 'on' : ''}"><b>${name}</b><span>${ST[r[key]]}</span></div>`;
   const pz = r.prize ? PRIZES[r.prize] : null;
-  const onsiteLabel = r.onsite !== 'ready' ? ONSITE[r.onsite] : !pz ? '還沒抽。請他在券上「現場優惠」選一張牌' : (r.onsite_uses ? `已記錄 ${r.onsite_uses} 次` : '');
-  const ready = ['gummy', 'bonus', 'crampeace'].some(k => r[k] === 'ready');
+  const row = (key, name) => `<div class="reward ${r[key] === 'ready' ? 'on' : ''}"><b>${name}</b><span>${ST[r[key]]}</span></div>`;
+  const gives = u.give.map(k => giveName(k, u));
+  const prizeBox = !u.member ? '' : !pz
+    ? `<div class="reward warn"><b>還沒翻牌</b><span>請他在兌換券上「翻一張牌」。現在結帳的話先算 93 折。</span></div>`
+    : `<div class="reward on"><b>他抽到：${esc(pz.title)}</b><span>${esc(pz.staff)}</span>${
+        r.special_left !== null && r.special_left !== undefined ? `<span>特價還能用 ${r.special_left} 件</span>` : ''}${
+        r.prize_gift === 'claimed' ? '<span>贈品已領過</span>' : ''}${r.onsite_uses ? `<span>已結帳 ${r.onsite_uses} 次</span>` : ''}</div>`;
   $('user').hidden = false;
   $('user').innerHTML = `
     <div class="progress-top"><h3>${esc(u.name) || '（未提供名稱）'}</h3><b>${esc(u.code)}</b></div>
     <p class="${u.is_friend ? 'muted' : 'msg bad'}">${u.is_friend ? (u.is_new ? '新加入的好友' : '原本的好友') : FRIEND_CHECK === 'staff'
       ? '尚未確認好友。請看他手機上 PulsarPump 的 LINE 聊天室，確認已加入後按下方按鈕。'
       : FRIEND_CHECK === 'oa' ? '尚未加好友（或已封鎖）。請他加入後，在聊天室輸入「任務卡」。'
-      : '尚未加好友，請他先加入並在兌換券按「重新整理」'}</p>
+      : '尚未加好友，請他先加入並在兌換券按「重新整理」'}${u.is_friend ? `｜${u.distance ? DIST[u.distance] : '還沒選距離'}｜${u.arrived ? '來過了' : '第一次來'}` : ''}</p>
     ${!u.is_friend && FRIEND_CHECK === 'staff' ? '<button class="primary" id="okFriend">已看過，確認是好友</button>' : ''}
-    <div class="tiles">
-      <div class="fact"><span>補給時間表</span><b>${u.distance ? DIST[u.distance] + '款' : '還沒選距離'}</b></div>
-      <div class="fact"><span>到場</span><b>${u.arrived ? '已報到' : '第一次來'}</b></div>
-    </div>
-    ${note || ''}
-    ${row('gummy', '軟糖 2 條')}${row('bonus', '答題加碼 1 條')}${row('crampeace', '揪新朋友：勁速補 1 包')}
-    <button class="primary" id="checkin" ${u.arrived && !ready ? 'disabled' : ''}>${u.arrived ? (ready ? '發放加碼並記錄' : '目前沒有可發的') : '報到並發放'}</button>
-    <div class="reward ${r.onsite === 'ready' && pz ? 'on' : ''}"><b>現場優惠${pz ? '：' + esc(pz.title) : ''}</b>${pz ? `<span style="color:var(--text)">${esc(pz.staff)}</span><span>${esc(PRIZE_BASE)}</span>` : ''}<span>${onsiteLabel}</span>
-      ${r.onsite === 'ready' && pz ? '<button id="onsite">收到錢了：記錄一筆</button>' : ''}</div>`;
+    ${note || (gives.length ? `<div class="panel alert"><h3>請交給他</h3><p class="give">${gives.map(esc).join('<br>')}</p>
+        <button class="primary" id="checkin">${u.arrived ? '給了，全部記錄' : '給了，報到並記錄'}</button></div>`
+      : u.arrived ? '<p class="muted">目前沒有要給他的東西。</p>'
+      : '<button class="primary" id="checkin">報到</button>')}
+    <details><summary class="muted">各項狀態</summary>
+      ${row('gummy', '軟糖 2 條')}${row('bonus', '答題加碼 1 條')}${row('crampeace', '揪新朋友：勁速補 1 包')}
+      ${r.prize_gift ? `<div class="reward ${r.prize_gift === 'ready' ? 'on' : ''}"><b>${esc(u.gift_text)}</b><span>${ST[r.prize_gift]}</span></div>` : ''}
+    </details>
+    ${prizeBox}
+    <button id="buy">他要買東西：開始結帳</button>`;
   const fb = $('okFriend');
   if (fb) fb.onclick = async () => {
     fb.disabled = true;
@@ -108,29 +139,112 @@ function show(u, note) {
     if (x.user) show(x.user);
     recent();
   };
-  $('checkin').onclick = async () => {
-    $('checkin').disabled = true;
+  const cb = $('checkin');
+  if (cb) cb.onclick = async () => {
+    cb.disabled = true;
     const x = await call('/api/staff/checkin', {code: u.code});
     if (!x.ok) { say(x.error || '操作失敗', false); if (x.user) show(x.user); return; }
-    const first = !u.arrived;
-    const things = (first ? ['試喝 1 杯'] : []).concat(x.given.map(k => GIVE[k]));
+    const things = x.given.map(k => giveName(k, x.user));
     const mates = (x.mates_ready || []).map(m => `<button data-mate="${esc(m.code)}">隊友 ${esc(m.name)}（${esc(m.code)}）現在也能領勁速補，按這裡查他</button>`).join('');
     say('已記錄。', true);
-    show(x.user, `<div class="panel alert"><h3>請交給他</h3><p class="big" style="font-size:24px;line-height:1.5">${things.length ? things.map(esc).join('<br>') : '這次沒有要給的東西'}</p>${mates}</div>`);
+    show(x.user, `<div class="panel alert"><h3>已記錄${things.length ? '，發出' : ''}</h3><p class="give">${things.length ? things.map(esc).join('<br>') : '報到完成，這次沒有要給的東西'}</p>${mates}</div>`);
     $('user').querySelectorAll('[data-mate]').forEach(b => b.onclick = () => { $('code').value = b.dataset.mate; lookup(); });
     today(); recent();
   };
-  const ob = $('onsite');
-  if (ob) ob.onclick = async () => {
-    ob.disabled = true;
-    const x = await call('/api/staff/onsite', {code: u.code});
-    say(x.ok ? '已記錄一筆現場優惠。' : (x.error || '操作失敗'), x.ok);
-    if (x.user) show(x.user);
-    recent();
-  };
+  $('buy').onclick = () => openShop(u);
 }
 
-const GIVE_SHORT = {gummy: '軟糖 2 條', bonus: '加碼軟糖 1 條', crampeace: '勁速補 1 包'};
+async function lookup(code) {
+  say(''); closeShop();
+  const r = await call('/api/staff/lookup', {code: code || $('code').value});
+  if (!r.ok) { $('user').hidden = true; CUR = null; return say(r.error || '查詢失敗', false); }
+  $('code').value = r.user.code;
+  show(r.user);
+  $('user').scrollIntoView({block: 'start', behavior: 'smooth'});
+}
+
+// ---- 結帳 ----
+let CART = {}, QUOTE = null, PAYWAY = '', SHOP_FOR = null, quoteSeq = 0;
+
+async function loadProducts() {
+  const r = await call('/api/staff/products');
+  if (r.ok) PRODUCTS = r.items;
+}
+function closeShop() { $('shop').hidden = true; CART = {}; QUOTE = null; PAYWAY = ''; }
+
+async function openShop(u) {
+  SHOP_FOR = u || null; CART = {}; QUOTE = null; PAYWAY = '';
+  if (!PRODUCTS.length) await loadProducts();
+  drawShop();
+  $('shop').hidden = false;
+  $('shop').scrollIntoView({block: 'start', behavior: 'smooth'});
+}
+
+function drawShop() {
+  const u = SHOP_FOR, pz = u && u.rewards.prize ? PRIZES[u.rewards.prize] : null;
+  const who = !u ? '沒有券的客人（官網價）'
+    : !u.member ? `${esc(u.name) || esc(u.code)}（還沒領券，官網價）`
+    : `${esc(u.name) || esc(u.code)}｜${pz ? esc(pz.title) : '還沒翻牌，93 折'}`;
+  const cats = [...new Set(PRODUCTS.map(p => p.cat))];
+  const grid = cats.map(c => `<p class="note">${esc(c)}</p><div class="prods">${PRODUCTS.filter(p => p.cat === c).map(p =>
+      `<button data-add="${esc(p.id)}" class="${CART[p.id] ? 'sel' : ''}"><span>${esc(p.name)}</span><small>${money(u && u.member && p.onsite ? p.onsite : p.price)}${CART[p.id] ? `　×${CART[p.id]}` : ''}</small></button>`).join('')}</div>`).join('');
+  const q = QUOTE;
+  const lines = q ? q.lines.map(l => `<div class="cartline"><div><b>${esc(l.name)}</b><span>${esc(l.how)}</span></div>
+      <div class="qty"><button data-dec="${esc(l.id)}" aria-label="減一">−</button><b>${l.qty}</b><button data-add="${esc(l.id)}" aria-label="加一">＋</button></div>
+      <b class="amt">${money(l.amount)}</b></div>`).join('') : '';
+  const saved = q ? q.list_total - q.total : 0;
+  $('shop').innerHTML = `
+    <div class="progress-top"><h3>結帳</h3><button id="shopClose" style="padding:6px 12px;font-size:15px">關閉</button></div>
+    <p class="muted">${who}</p>
+    ${u && !u.member ? '<p class="msg bad">他還沒加好友或還沒選距離，所以算官網價。請他先領券，再重新查詢，就有現場價。</p>' : ''}
+    ${grid}
+    ${q ? `<div class="cart">${lines}
+        <div class="total"><span>應收${saved > 0 ? `（官網價 ${money(q.list_total)}，省 ${money(saved)}）` : ''}</span><b>${money(q.total)}</b></div></div>
+      <div class="row2"><button data-pay="cash" class="${PAYWAY === 'cash' ? 'sel' : ''}">現金</button><button data-pay="linepay" class="${PAYWAY === 'linepay' ? 'sel' : ''}">LINE Pay</button></div>
+      ${PAYWAY === 'linepay' ? `<p class="note">請客人掃立牌，輸入 ${money(q.total)} 元。看到入帳通知再按下面的按鈕。</p>` : ''}
+      <button class="primary" id="paid" ${PAYWAY ? '' : 'disabled'}>${PAYWAY ? `已收到 ${money(q.total)} 元，記錄這筆` : '先選付款方式'}</button>
+      <p class="msg bad" id="shopMsg" hidden></p>`
+      : '<p class="muted">點商品加入，再點一次加一件。</p>'}`;
+  $('shopClose').onclick = closeShop;
+  $('shop').querySelectorAll('[data-add]').forEach(b => b.onclick = () => { CART[b.dataset.add] = (CART[b.dataset.add] || 0) + 1; requote(); });
+  $('shop').querySelectorAll('[data-dec]').forEach(b => b.onclick = () => {
+    const k = b.dataset.dec; CART[k] = (CART[k] || 0) - 1; if (CART[k] <= 0) delete CART[k]; requote(); });
+  $('shop').querySelectorAll('[data-pay]').forEach(b => b.onclick = () => { PAYWAY = b.dataset.pay; drawShop(); });
+  const pb = $('paid');
+  if (pb) pb.onclick = pay;
+}
+
+const cartItems = () => Object.entries(CART).map(([id, qty]) => ({id, qty}));
+const shopCode = () => SHOP_FOR ? SHOP_FOR.code : '';
+
+async function requote() {
+  const items = cartItems(), seq = ++quoteSeq;
+  if (!items.length) { QUOTE = null; return drawShop(); }
+  const r = await call('/api/staff/quote', {code: shopCode(), items});
+  if (seq !== quoteSeq) return;             // 連點時只採用最後一次的結果
+  QUOTE = r.ok ? r : null;
+  drawShop();
+  if (!r.ok) { const m = $('shopMsg') || $('msg'); m.hidden = false; m.textContent = r.error || '試算失敗'; }
+}
+
+async function pay() {
+  $('paid').disabled = true;
+  const r = await call('/api/staff/sale', {code: shopCode(), items: cartItems(), pay: PAYWAY, total: QUOTE.total});
+  if (!r.ok) {
+    if (r.reason === 'changed') { QUOTE = {...QUOTE, ...r, ok: true}; drawShop(); }
+    const m = $('shopMsg'); if (m) { m.hidden = false; m.textContent = r.error || '記錄失敗'; }
+    else say(r.error || '記錄失敗', false);
+    return;
+  }
+  const done = `已記錄：${money(r.total)} 元（${PAY[PAYWAY]}）。`;
+  closeShop();
+  say(done, true);
+  if (r.user) show(r.user); else { $('user').hidden = true; CUR = null; }
+  $('msg').scrollIntoView({block: 'center', behavior: 'smooth'});
+  today(); recent();
+}
+
+// ---- 最近的操作 ----
 async function recent() {
   const r = await call('/api/staff/recent');
   if (!r.ok) return;
@@ -138,23 +252,62 @@ async function recent() {
   $('undoMin').textContent = r.undo_minutes;
   $('whoami').textContent = WHO;
   $('recent').innerHTML = r.items.map(x => `<div class="reward ${x.undone ? '' : 'on'}">
-      <b>${esc(x.at)}　${esc(x.name) || '（未提供名稱）'}（${esc(x.code)}）</b>
-      <span>${esc(x.what)}${x.given.length ? '：' + x.given.map(k => GIVE_SHORT[k]).join('、') : ''}${x.undone ? '　已取消' : ''}</span>
+      <b>${esc(x.at)}　${esc(x.name) || '（未提供名稱）'}${x.code ? `（${esc(x.code)}）` : ''}</b>
+      <span>${esc(x.what)}${x.given.length ? '：' + x.given.map(k => k === 'prize' ? '抽獎贈品' : GIVE[k]).join('、') : ''}${x.undone ? '　已取消' : ''}</span>
       ${x.can_undo ? `<button data-undo="${x.id}">按錯了，取消這筆</button>` : ''}</div>`).join('');
   $('recent').querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => {
     b.disabled = true;
     const x = await call('/api/staff/undo', {log_id: Number(b.dataset.undo)});
-    say(x.ok ? '已取消。發出去的東西請記得收回。' : (x.error || '取消失敗'), x.ok);
+    say(x.ok ? '已取消。發出去的東西請記得收回，收的錢請退還。' : (x.error || '取消失敗'), x.ok);
     if (x.user && !$('user').hidden) show(x.user);
     today(); recent();
   });
 }
 
-async function lookup() {
+// ---- 用名稱找 ----
+async function nameSearch() {
+  const r = await call('/api/staff/search', {q: $('nameQ').value});
+  $('nameOut').innerHTML = !r.ok ? `<p class="msg bad">${esc(r.error || '找不到')}</p>`
+    : r.items.length ? r.items.map(x => `<button data-code="${esc(x.code)}">${esc(x.name) || '（未提供名稱）'}　${esc(x.code)}　${x.distance ? DIST[x.distance] : '未選距離'}${x.arrived ? '　來過' : ''}</button>`).join('')
+    : '<p class="muted">沒有符合的人。</p>';
+  $('nameOut').querySelectorAll('[data-code]').forEach(b => b.onclick = () => { $('nameBox').hidden = true; lookup(b.dataset.code); });
+}
+
+// ---- 掃 QR code ----
+let stream = null, scanning = false;
+function loadScript(src) {
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+}
+function stopScan() {
+  scanning = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; $('scanner').hidden = true;
+}
+async function startScan() {
   say('');
-  const r = await call('/api/staff/lookup', {code: $('code').value});
-  if (!r.ok) { $('user').hidden = true; return say(r.error || '查詢失敗', false); }
-  show(r.user);
+  try {
+    if (!window.jsQR) await loadScript('/static/vendor/jsQR.js');
+    stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}}, audio: false});
+  } catch (e) {
+    return say('開不了相機。請允許這個網頁使用相機，或改用輸入代碼。', false);
+  }
+  const v = $('cam'), cv = document.createElement('canvas'), ctx = cv.getContext('2d', {willReadFrequently: true});
+  v.srcObject = stream; $('scanner').hidden = false; scanning = true;
+  try { await v.play(); } catch (e) {}
+  const tick = () => {
+    if (!scanning) return;
+    if (v.videoWidth) {
+      const k = Math.min(1, 640 / v.videoWidth);
+      cv.width = Math.round(v.videoWidth * k); cv.height = Math.round(v.videoHeight * k);
+      ctx.drawImage(v, 0, 0, cv.width, cv.height);
+      const hit = jsQR(ctx.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height, {inversionAttempts: 'dontInvert'});
+      const m = hit && /(?:^|[:=\/])([A-HJ-NP-Z2-9]{5})$/.exec(hit.data.trim().toUpperCase());
+      if (m) { stopScan(); return lookup(m[1]); }
+      if (hit) $('scanMsg').textContent = '這不是兌換券的 QR code，請客人打開兌換券';
+    }
+    requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 async function enter() {
@@ -163,16 +316,22 @@ async function enter() {
   if (!WHO) { $('loginMsg').hidden = false; $('loginMsg').textContent = '請先輸入你的名字。'; return; }
   if (await today()) {
     try { sessionStorage.setItem('pin', PIN); localStorage.setItem('staffName', WHO); } catch (e) {}
-    $('login').hidden = true; $('main').hidden = false; $('code').focus(); recent();
+    $('login').hidden = true; $('main').hidden = false; recent(); loadProducts();
   } else if ($('pin').value) {
     $('loginMsg').hidden = false; $('loginMsg').textContent = 'PIN 不正確，或系統尚未設定。';
   }
 }
 $('enter').onclick = enter;
 $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') enter(); });
-$('lookup').onclick = lookup;
+$('lookup').onclick = () => lookup();
 $('code').addEventListener('keydown', e => { if (e.key === 'Enter') lookup(); });
 $('reload').onclick = today;
+$('scan').onclick = startScan;
+$('scanStop').onclick = stopScan;
+$('byName').onclick = () => { $('nameBox').hidden = !$('nameBox').hidden; if (!$('nameBox').hidden) $('nameQ').focus(); };
+$('nameGo').onclick = nameSearch;
+$('nameQ').addEventListener('keydown', e => { if (e.key === 'Enter') nameSearch(); });
+$('walkin').onclick = () => { say(''); $('user').hidden = true; CUR = null; openShop(null); };
 $('who').value = WHO;
 if (PIN && WHO) enter();
 </script>

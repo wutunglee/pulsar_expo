@@ -1,4 +1,4 @@
-"""PulsarPump 博覽會補給站任務卡。Flask＋SQLite。"""
+"""PulsarPump 博覽會補給站兌換券。Flask＋SQLite。"""
 import csv
 import hmac
 import io
@@ -7,7 +7,7 @@ import os
 import secrets
 import time
 import urllib.parse
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (Flask, Response, g, jsonify, redirect, render_template, request,
@@ -66,6 +66,9 @@ def create_app(test_config=None):
         ADMIN_TOKEN=env("ADMIN_TOKEN", ""),
         COUPON_ABSENT=env("COUPON_ABSENT", ""),   # 沒到攤位的人，活動後看到的官網折扣碼
         COUPON_ABSENT_TEXT=env("COUPON_ABSENT_TEXT", "滿 2,000 元折 250 元，2027/1/19 前有效"),
+        # 排練用：填展期的某一天（例如 2026-12-17），系統就把今天當成那一天，可以試報到與結帳。
+        # 正式上線前一定要拿掉。
+        REHEARSAL_DAY=env("REHEARSAL_DAY", ""),
         NOW_FN=None,  # 測試時可換成固定時間
         PERMANENT_SESSION_LIFETIME=timedelta(days=60),
         SESSION_COOKIE_HTTPONLY=True,
@@ -85,13 +88,22 @@ def create_app(test_config=None):
     if not app.config["DEV_MODE"] and app.config["SECRET_KEY"] == DEFAULT_SECRET:
         raise RuntimeError("正式環境必須在 .env 設定 SECRET_KEY")
 
-    dbm.init(app.config["DB_PATH"])
+    if app.config["REHEARSAL_DAY"] and app.config["REHEARSAL_DAY"] not in rules.EVENT_DAYS:
+        raise RuntimeError("REHEARSAL_DAY 要填展期中的一天，例如 2026-12-17")
+
+    dbm.init(app.config["DB_PATH"], content.PRODUCTS)
     card_signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="card-link")
     pin_fails = {}  # ip -> (次數, 解鎖時間)
 
     def now():
         fn = app.config["NOW_FN"]
-        return fn() if fn else rules.now()
+        if fn:
+            return fn()
+        n = rules.now()
+        if app.config["REHEARSAL_DAY"]:
+            d = datetime.strptime(app.config["REHEARSAL_DAY"], "%Y-%m-%d")
+            n = n.replace(year=d.year, month=d.month, day=d.day)
+        return n
 
     def db():
         if "db" not in g:
@@ -274,7 +286,7 @@ def create_app(test_config=None):
         c = app.config
         return jsonify({
             "liff_id": c["LIFF_ID"] if c["IDENTITY"] == "liff" else "",
-            "dev": c["DEV_MODE"], "oa_id": c["LINE_OA_ID"],
+            "dev": c["DEV_MODE"], "oa_id": c["LINE_OA_ID"], "rehearsal": bool(c["REHEARSAL_DAY"]),
             "identity": c["IDENTITY"], "friend_check": c["FRIEND_CHECK"],
             "keyword": c["LINE_KEYWORD"],
             "has_pending_ref": bool(request.cookies.get("pending_ref")),
@@ -489,10 +501,17 @@ def create_app(test_config=None):
 
     def staff_view(u):
         u = rules.get_user(db(), u["id"])
-        s = me = rules.state(db(), u["id"], now(), app.config, content.QUIZ)
+        s = rules.state(db(), u["id"], now(), app.config, content.QUIZ)
+        r = s["rewards"]
+        give = [k for k in rules.PHYSICAL if r[k] == "ready"]
+        if r["prize_gift"] == "ready":
+            give.append("prize")
+        pz = content.PRIZES.get(r["prize"]) if r["prize"] else None
         return {"name": u["name"], "code": u["code"], "is_friend": s["is_friend"],
                 "is_new": s["is_new"], "distance": u["distance"], "arrived": s["arrived"],
-                "quiz_done": me["quiz_done"], "rewards": s["rewards"], "today": s["today"]}
+                "quiz_done": s["quiz_done"], "rewards": r, "today": s["today"],
+                "member": r["onsite"] != "locked",      # 有券（加好友＋選距離）才有現場價
+                "give": give, "gift_text": pz.get("gift", "") if pz else ""}
 
     @app.post("/api/staff/lookup")
     @need_staff
@@ -501,6 +520,20 @@ def create_app(test_config=None):
         if not u:
             return err("找不到這個代碼", 404)
         return jsonify({"ok": True, "user": staff_view(u)})
+
+    @app.post("/api/staff/search")
+    @need_staff
+    def staff_search():
+        """客人手機打不開時，用 LINE 名稱找人。"""
+        q = str(body().get("q") or "").strip()
+        if len(q) < 1:
+            return err("請輸入名稱")
+        like = "%" + q.replace("%", "").replace("_", "") + "%"
+        rs = db().execute("SELECT name, code, distance, arrived_at FROM users WHERE name LIKE ? "
+                          "ORDER BY created_at DESC LIMIT 8", (like,)).fetchall()
+        return jsonify({"ok": True, "items": [
+            {"name": r["name"], "code": r["code"], "distance": r["distance"],
+             "arrived": bool(r["arrived_at"])} for r in rs]})
 
     @app.post("/api/staff/friend")
     @need_staff
@@ -520,8 +553,8 @@ def create_app(test_config=None):
     @need_staff
     @need_name
     def staff_checkin():
-        """到攤位報到。記下到場，並把此刻可以領的實體贈品一次發完。
-        答題加碼、勁速補若晚一點才達成，再查一次、再按一次即可，不會重複發。"""
+        """到攤位報到。記下到場，並把此刻可以領的東西一次發完：報到軟糖、答題加碼、
+        揪朋友的勁速補、抽到的贈品。晚一點才達成的，再掃一次、再按一次即可，不會重複發。"""
         n, conn = now(), db()
         if not rules.event_day(n):
             return err("只能在博覽會期間報到")
@@ -543,8 +576,9 @@ def create_app(test_config=None):
                 "gummy": rules.gummy_status(conn, u, claims, n),
                 "bonus": rules.bonus_status(conn, u, claims, n, len(content.QUIZ)),
                 "crampeace": rules.crampeace_status(conn, u, claims, n),
+                "prize": rules.prize_gift_status(conn, u["id"], claims, n),
             }
-            for reward in rules.PHYSICAL:
+            for reward in rules.PHYSICAL + ("prize",):
                 if status[reward] == "ready":
                     conn.execute("INSERT INTO claims(user_id, reward, day, at) VALUES(?,?,?,?)",
                                  (u["id"], reward, rules.day_key(n), rules.iso(n)))
@@ -566,41 +600,117 @@ def create_app(test_config=None):
         return jsonify({"ok": True, "given": given, "first": first, "log_id": log_id,
                         "mates_ready": mates, "user": staff_view(u)})
 
-    @app.post("/api/staff/onsite")
+    # ---------- 結帳 ----------
+
+    def product_rows(only_active=True):
+        q = "SELECT * FROM products" + (" WHERE active=1" if only_active else "") + " ORDER BY sort, name"
+        return [dict(r) for r in db().execute(q)]
+
+    def read_cart(conn):
+        """回傳 (客人或 None, 是否有券, 抽到的獎, 商品明細)。客人代碼空白＝散客。"""
+        b = body()
+        code, u = str(b.get("code") or "").strip(), None
+        if code:
+            u = by_code(code)
+            if not u:
+                return None, err("找不到這個代碼", 404)
+        prods = {p["id"]: p for p in product_rows()}
+        items = []
+        raw = b.get("items")
+        for it in raw if isinstance(raw, list) else []:
+            p = prods.get(it.get("id")) if isinstance(it, dict) else None
+            qty = it.get("qty") if p else None
+            if not p or not isinstance(qty, int) or isinstance(qty, bool) or not 1 <= qty <= 50:
+                return None, err("商品或數量不正確，請重新點選")
+            items.append((p, qty))
+        if not items:
+            return None, err("請先點選商品")
+        member = bool(u) and rules.onsite_status(u, now()) != "locked"
+        prize = rules.prize_of(conn, u["id"]) if member else None
+        used = rules.special_used(conn, u["id"]) if member else 0
+        return (u, member, prize, rules.price_cart(items, prize, member, used)), None
+
+    @app.get("/api/staff/products")
+    @need_staff
+    def staff_products():
+        return jsonify({"ok": True, "items": product_rows()})
+
+    @app.post("/api/staff/quote")
+    @need_staff
+    def staff_quote():
+        """試算，不寫入。"""
+        got, bad = read_cart(db())
+        if bad:
+            return bad
+        _u, member, prize, cart = got
+        return jsonify({"ok": True, "member": member, "prize": prize, **cart})
+
+    @app.post("/api/staff/sale")
     @need_staff
     @need_name
-    def staff_onsite():
-        """客人用現場優惠券結帳時記錄一筆。不限次數。會順便記下到場。"""
+    def staff_sale():
+        """收到錢之後記錄一筆。金額由主機依客人的獎計算；畫面上的金額和主機算的不同就不寫入。"""
         n, conn = now(), db()
         if not rules.event_day(n):
-            return err("現場優惠券只能在博覽會期間使用")
-        u = by_code(body().get("code"))
-        if not u:
-            return err("找不到這個代碼", 404)
-        if rules.onsite_status(u, n) != "ready":
-            return err("對方還沒加好友或還沒選距離", 409, reason="locked", user=staff_view(u))
-        if not rules.prize_of(conn, u["id"]):
-            return err("他還沒抽現場優惠，請他在券上先抽", 409, reason="no_prize", user=staff_view(u))
-        cur = conn.execute("INSERT INTO onsite_uses(user_id, day, at) VALUES(?,?,?)",
-                           (u["id"], rules.day_key(n), rules.iso(n)))
-        conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
-                     (rules.iso(n), u["id"]))
-        log_id = log_action("onsite", u["id"], use_id=cur.lastrowid, first=not u["arrived_at"])
-        return jsonify({"ok": True, "log_id": log_id, "user": staff_view(u)})
+            return err("只能在博覽會期間結帳")
+        pay = body().get("pay")
+        if pay not in ("cash", "linepay"):
+            return err("請選擇現金或 LINE Pay")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            got, bad = read_cart(conn)
+            if not bad:
+                u, member, prize, cart = got
+                if body().get("total") != cart["total"]:
+                    bad = err("金額有變動，請再確認一次", 409, reason="changed", **cart)
+            if bad:
+                conn.execute("ROLLBACK")
+                return bad
+            cur = conn.execute(
+                "INSERT INTO sales(at, day, staff, user_id, prize, pay, total, list_total) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (rules.iso(n), rules.day_key(n), g.staff, u["id"] if u else None, prize, pay,
+                 cart["total"], cart["list_total"]))
+            sale_id = cur.lastrowid
+            for ln in cart["lines"]:
+                conn.execute(
+                    "INSERT INTO sale_items(sale_id, product_id, name, qty, unit_list, amount, "
+                    "special_qty, how) VALUES(?,?,?,?,?,?,?,?)",
+                    (sale_id, ln["id"], ln["name"], ln["qty"], ln["list"], ln["amount"],
+                     ln["special"], ln["how"]))
+            first = bool(u) and not u["arrived_at"]
+            if u:
+                conn.execute("UPDATE users SET arrived_at=COALESCE(arrived_at, ?) WHERE id=?",
+                             (rules.iso(n), u["id"]))
+            conn.execute(
+                "INSERT INTO staff_log(at, staff, action, user_id, detail) VALUES(?,?,?,?,?)",
+                (rules.iso(n), g.staff, "sale", u["id"] if u else None,
+                 json.dumps({"sale_id": sale_id, "total": cart["total"], "pay": pay,
+                             "first": first}, ensure_ascii=False)))
+            log_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return jsonify({"ok": True, "sale_id": sale_id, "log_id": log_id, "total": cart["total"],
+                        "user": staff_view(u) if u else None})
 
     def log_view(r, n):
         age = (n - rules.parse(r["at"])).total_seconds() / 60
         d = json.loads(r["detail"])
+        pay = {"cash": "現金", "linepay": "LINE Pay"}.get(d.get("pay"), "")
         what = {"checkin": "報到" + ("並發放" if d.get("given") else ""),
-                "onsite": "記錄現場優惠一筆", "friend": "確認好友"}[r["action"]]
-        return {"id": r["id"], "at": r["at"][11:16], "name": r["name"], "code": r["code"],
+                "sale": f"結帳 {d.get('total', 0):,} 元（{pay}）", "onsite": "記錄現場優惠一筆",
+                "friend": "確認好友"}[r["action"]]
+        same = ("SELECT 1 FROM staff_log WHERE user_id=? AND id>? AND undone_at IS NULL"
+                if r["user_id"] else "SELECT 1 WHERE ? IS NOT NULL AND ? IS NULL")
+        return {"id": r["id"], "at": r["at"][11:16], "name": r["name"] or ("" if r["user_id"] else "散客"),
+                "code": r["code"] or "",
                 "action": r["action"], "given": d.get("given", []), "what": what,
                 "undone": bool(r["undone_at"]),
                 # 只有這位客人最新的一筆可以取消，要先取消新的才能取消舊的
                 "can_undo": (not r["undone_at"] and age <= UNDO_MINUTES and r["staff"] == g.staff
-                             and not db().execute(
-                                 "SELECT 1 FROM staff_log WHERE user_id=? AND id>? AND undone_at IS NULL",
-                                 (r["user_id"], r["id"])).fetchone())}
+                             and not db().execute(same, (r["user_id"], r["id"])).fetchone())}
 
     @app.get("/api/staff/recent")
     @need_staff
@@ -609,7 +719,7 @@ def create_app(test_config=None):
         """這位工作人員最近的操作，用來取消按錯的那一筆。"""
         n = now()
         rs = db().execute(
-            "SELECT l.*, u.name, u.code FROM staff_log l JOIN users u ON u.id=l.user_id "
+            "SELECT l.*, u.name, u.code FROM staff_log l LEFT JOIN users u ON u.id=l.user_id "
             "WHERE l.staff=? ORDER BY l.id DESC LIMIT 6", (g.staff,)).fetchall()
         return jsonify({"ok": True, "items": [log_view(r, n) for r in rs],
                         "undo_minutes": UNDO_MINUTES})
@@ -632,19 +742,21 @@ def create_app(test_config=None):
                 why = f"這筆是 {r['staff']} 操作的，請他本人取消"
             elif (n - rules.parse(r["at"])).total_seconds() > UNDO_MINUTES * 60:
                 why = f"超過 {UNDO_MINUTES} 分鐘，不能取消了。請告訴負責人"
-            elif conn.execute("SELECT 1 FROM staff_log WHERE user_id=? AND id>? AND undone_at IS NULL",
-                              (r["user_id"], r["id"])).fetchone():
+            elif r["user_id"] and conn.execute(
+                    "SELECT 1 FROM staff_log WHERE user_id=? AND id>? AND undone_at IS NULL",
+                    (r["user_id"], r["id"])).fetchone():
                 why = "這位客人之後還有別的操作，請先取消比較新的那一筆"
             if not why:
                 d, uid = json.loads(r["detail"]), r["user_id"]
                 if r["action"] == "checkin":
                     for reward in d.get("given", []):
                         conn.execute("DELETE FROM claims WHERE user_id=? AND reward=?", (uid, reward))
-                elif r["action"] == "onsite":
-                    conn.execute("DELETE FROM onsite_uses WHERE id=?", (d.get("use_id"),))
+                elif r["action"] == "sale":
+                    conn.execute("UPDATE sales SET voided_at=? WHERE id=?",
+                                 (rules.iso(n), d.get("sale_id")))
                 elif r["action"] == "friend" and not d.get("was_friend"):
                     conn.execute("UPDATE users SET is_friend=0 WHERE id=?", (uid,))
-                if d.get("first"):
+                if d.get("first") and uid:
                     conn.execute("UPDATE users SET arrived_at=NULL WHERE id=?", (uid,))
                 conn.execute("UPDATE staff_log SET undone_at=? WHERE id=?", (rules.iso(n), r["id"]))
             conn.execute("COMMIT")
@@ -653,7 +765,8 @@ def create_app(test_config=None):
             raise
         if why:
             return err(why, 409)
-        return jsonify({"ok": True, "user": staff_view(rules.get_user(conn, r["user_id"]))})
+        return jsonify({"ok": True, "user": staff_view(rules.get_user(conn, r["user_id"]))
+                        if r["user_id"] else None})
 
     @app.get("/api/staff/today")
     @need_staff
@@ -663,6 +776,13 @@ def create_app(test_config=None):
                "friend_check": app.config["FRIEND_CHECK"]}
         for r in rules.PHYSICAL:
             out[r] = {"cap": d[r] if d else 0, "left": rules.left_today(db(), r, n)}
+        s = db().execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(total),0) total, "
+            "COALESCE(SUM(CASE WHEN pay='cash' THEN total END),0) cash, "
+            "COALESCE(SUM(CASE WHEN pay='linepay' THEN total END),0) linepay "
+            "FROM sales WHERE day=? AND voided_at IS NULL", (rules.day_key(n),)).fetchone()
+        out["sales"] = dict(s)
+        out["rehearsal"] = bool(app.config["REHEARSAL_DAY"])
         return jsonify({"ok": True, **out})
 
     # ---------- 統計 ----------
@@ -684,10 +804,36 @@ def create_app(test_config=None):
                              "HAVING COUNT(*) >= ?)", min(rules.QUIZ_SIZE, len(content.QUIZ))),
             "draws": rows("SELECT prize, COUNT(*) n FROM draws WHERE prize IS NOT NULL "
                          "GROUP BY prize ORDER BY n DESC"),
-            "onsite_uses": one("SELECT COUNT(*) FROM onsite_uses"),
-            "onsite_buyers": one("SELECT COUNT(DISTINCT user_id) FROM onsite_uses"),
-            "onsite_by_day": rows("SELECT day, COUNT(*) n, COUNT(DISTINCT user_id) buyers "
-                                  "FROM onsite_uses GROUP BY day ORDER BY day"),
+            "prize_names": {k: v["title"] for k, v in content.PRIZES.items()},
+            "sales_n": one("SELECT COUNT(*) FROM sales WHERE voided_at IS NULL"),
+            "sales_total": one("SELECT COALESCE(SUM(total),0) FROM sales WHERE voided_at IS NULL"),
+            "sales_list_total": one("SELECT COALESCE(SUM(list_total),0) FROM sales WHERE voided_at IS NULL"),
+            "buyers": one("SELECT COUNT(DISTINCT user_id) FROM sales WHERE voided_at IS NULL "
+                          "AND user_id IS NOT NULL"),
+            "walkin_n": one("SELECT COUNT(*) FROM sales WHERE voided_at IS NULL AND user_id IS NULL"),
+            "sales_by_day": rows(
+                "SELECT day, COUNT(*) n, SUM(total) total, "
+                "COALESCE(SUM(CASE WHEN pay='cash' THEN total END),0) cash, "
+                "COALESCE(SUM(CASE WHEN pay='linepay' THEN total END),0) linepay "
+                "FROM sales WHERE voided_at IS NULL GROUP BY day ORDER BY day"),
+            "by_product": rows(
+                "SELECT i.name, SUM(i.qty) qty, SUM(i.amount) amount FROM sale_items i "
+                "JOIN sales s ON s.id=i.sale_id WHERE s.voided_at IS NULL "
+                "GROUP BY i.product_id ORDER BY amount DESC"),
+            "by_prize": rows(
+                "SELECT d.prize, COUNT(*) drawn, "
+                "(SELECT COUNT(*) FROM claims c JOIN draws x ON x.user_id=c.user_id "
+                " WHERE c.reward='prize' AND x.prize=d.prize) gifts, "
+                "(SELECT COUNT(DISTINCT s.user_id) FROM sales s JOIN draws x ON x.user_id=s.user_id "
+                " WHERE s.voided_at IS NULL AND x.prize=d.prize) buyers, "
+                "(SELECT COALESCE(SUM(s.total),0) FROM sales s JOIN draws x ON x.user_id=s.user_id "
+                " WHERE s.voided_at IS NULL AND x.prize=d.prize) revenue "
+                "FROM draws d WHERE d.prize IS NOT NULL GROUP BY d.prize ORDER BY drawn DESC"),
+            "gift_quota": [{"prize": k, "cap": cap, "drawn": rules.gift_drawn(conn)[k]}
+                           for k, cap in rules.GIFT_QUOTA.items()],
+            "sales_by_staff": rows(
+                "SELECT staff, COUNT(*) n, SUM(total) total FROM sales WHERE voided_at IS NULL "
+                "GROUP BY staff ORDER BY total DESC"),
             "questions_open": one("SELECT COUNT(*) FROM questions WHERE answered_at IS NULL"),
             "by_staff": rows("SELECT staff, COUNT(*) n, SUM(undone_at IS NOT NULL) undone "
                              "FROM staff_log GROUP BY staff ORDER BY n DESC"),
@@ -762,13 +908,74 @@ def create_app(test_config=None):
                 one("SELECT COUNT(*) FROM quiz WHERE user_id=?"),
                 content.PRIZES[prize]["title"] if prize else "",
                 claims.get("gummy", ""), claims.get("bonus", ""), claims.get("crampeace", ""),
-                one("SELECT COUNT(*) FROM onsite_uses WHERE user_id=?"),
+                claims.get("prize", ""),
+                one("SELECT COUNT(*) FROM sales WHERE user_id=? AND voided_at IS NULL"),
+                one("SELECT COALESCE(SUM(total),0) FROM sales WHERE user_id=? AND voided_at IS NULL"),
                 one("SELECT COUNT(*) FROM questions WHERE user_id=?"),
             ])
         return csv_response("participants.csv", [
             "代碼", "LINE 名稱", "目前是好友", "好友類型", "距離", "領券時間", "邀請人代碼", "他帶進幾人",
             "到攤位時間", "答了幾題", "抽到的現場優惠", "軟糖領取日", "加碼軟糖領取日", "勁速補領取日",
-            "現場優惠結帳次數", "提問數"], out)
+            "抽獎贈品領取日", "結帳次數", "消費金額", "提問數"], out)
+
+    @app.get("/api/admin/sales.csv")
+    @need_admin
+    def admin_sales():
+        """銷售明細：一列一項商品。取消的也列出來並註明。"""
+        rs = db().execute(
+            "SELECT s.at, s.id, s.staff, COALESCE(u.code,''), COALESCE(u.name,'散客'), s.prize, s.pay, "
+            "i.name, i.qty, i.unit_list, i.amount, i.how, s.total, s.voided_at "
+            "FROM sales s JOIN sale_items i ON i.sale_id=s.id LEFT JOIN users u ON u.id=s.user_id "
+            "ORDER BY s.id, i.rowid")
+        pay = {"cash": "現金", "linepay": "LINE Pay"}
+        out = [[r[0][:16].replace("T", " "), r[1], r[2], r[3], r[4],
+                content.PRIZES[r[5]]["title"] if r[5] in content.PRIZES else "", pay.get(r[6], r[6]),
+                r[7], r[8], r[9], r[10], r[11], r[12], "已取消" if r[13] else ""] for r in rs]
+        return csv_response("sales.csv", [
+            "時間", "單號", "工作人員", "客人代碼", "客人名稱", "抽到的獎", "付款方式",
+            "商品", "數量", "官網單價", "實收小計", "計價方式", "整單金額", "狀態"], out)
+
+    @app.get("/api/admin/products")
+    @need_admin
+    def admin_products():
+        return jsonify({"ok": True, "items": product_rows(only_active=False)})
+
+    @app.post("/api/admin/product")
+    @need_admin
+    def admin_product_save():
+        """改價、上下架，或新增一項商品。已賣出的紀錄不受影響（明細存的是當時的品名與金額）。"""
+        b, conn = body(), db()
+
+        def money(v, optional=False):
+            if optional and v in (None, "", 0):
+                return None
+            if not isinstance(v, int) or isinstance(v, bool) or not 1 <= v <= 100000:
+                raise ValueError
+            return v
+        try:
+            name = str(b.get("name") or "").strip()[:40]
+            price, onsite, multi = money(b.get("price")), money(b.get("onsite"), True), money(b.get("multi"), True)
+            if not name:
+                raise ValueError
+        except ValueError:
+            return err("品名和價格要填，價格請填整數")
+        tag = b.get("tag") if b.get("tag") in ("gummy", "flask", "cramp", "noxx") else ""
+        pid = str(b.get("id") or "").strip()
+        if pid:
+            cur = conn.execute(
+                "UPDATE products SET name=?, cat=?, tag=?, price=?, onsite=?, multi=?, active=? WHERE id=?",
+                (name, str(b.get("cat") or "")[:20], tag, price, onsite, multi,
+                 int(bool(b.get("active", True))), pid))
+            if not cur.rowcount:
+                return err("找不到這項商品", 404)
+        else:
+            pid = "p" + secrets.token_hex(4)
+            top = conn.execute("SELECT COALESCE(MAX(sort),0)+1 FROM products").fetchone()[0]
+            conn.execute(
+                "INSERT INTO products(id, name, cat, tag, price, onsite, multi, active, sort) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (pid, name, str(b.get("cat") or "")[:20], tag, price, onsite, multi, 1, top))
+        return jsonify({"ok": True, "items": product_rows(only_active=False)})
 
     # ---------- 個資刪除（命令列）----------
 

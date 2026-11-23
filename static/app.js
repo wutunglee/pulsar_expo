@@ -149,10 +149,23 @@ function item(name, sub, status) {
 
 function pickup() {
   const t = S.today, booth = esc(CFG.event.booth);
-  if (S.arrived) return '<p class="muted">謝謝你來攤位。還有加碼沒領的話，達成後再給工作人員看一次代碼。</p>';
+  if (S.arrived) return '<p class="muted">謝謝你來攤位。還有沒領的，達成後再給工作人員掃一次。</p>';
   if (t.over) return '<p class="muted">博覽會已經結束，現場贈品停止發放。</p>';
-  if (t.is_event_day) return `<p><b>現在就可以領。</b>到 ${booth} 攤位，把下面的代碼給工作人員看。今日軟糖還有 ${t.left.gummy} 份。</p>`;
-  return `<p>12/17–12/19 到 ${booth} 攤位，把下面的代碼給工作人員看。每日限量，三天都可以來。</p>`;
+  if (t.is_event_day) return `<p><b>現在就可以領。</b>到 ${booth} 攤位，把下面的 QR code 給工作人員掃。今日軟糖還有 ${t.left.gummy} 份。</p>`;
+  return `<p>12/17–12/19 到 ${booth} 攤位，把下面的 QR code 給工作人員掃，一次領齊。每日限量，三天都可以來。</p>`;
+}
+
+// 個人 QR code：內容是 PULSAR: 加兌換代碼，工作人員用核銷頁掃
+function qrBlock() {
+  let svg = '';
+  try {
+    const q = qrcode(0, 'M');
+    q.addData('PULSAR:' + S.code);
+    q.make();
+    svg = q.createSvgTag({cellSize: 4, margin: 2, scalable: true});
+  } catch (e) {}
+  return `<div class="myqr">${svg ? `<div class="qr" role="img" aria-label="你的兌換 QR code">${svg}</div>` : ''}
+      <div><span class="muted">兌換代碼</span><b>${esc(S.code)}</b><span class="note">掃不到的時候，把這 5 碼唸給工作人員。</span></div></div>`;
 }
 
 function quizBlock() {
@@ -197,24 +210,25 @@ function teamBlock() {
 
 function onsiteBlock() {
   const r = S.rewards;
-  const head = '<div class="extra-head"><span class="plus">現場限定</span><h3>現場優惠</h3></div>';
+  const head = '<div class="extra-head"><span class="plus">現場限定</span><h3>翻一張牌，看你到攤位能拿什麼</h3></div>';
   if (r.onsite === 'locked' || !r.cards) return '';
   const p = r.prize ? CFG.prizes[r.prize] : null;
   if (!p) {
     if (r.onsite === 'ended') return '';
     // 牌在這個畫面出現之前就由主機洗好存檔了，這裡只送出選的位置
     return `<section class="extra" id="draw">${head}
-      <p>${r.cards} 張牌選一張，翻開就是你在攤位能用的優惠。每人選一次，選完全部翻開給你看。</p>
+      <p>${r.cards} 張牌選一張，張張有獎：有的直接送，有的是攤位才有的價格。每人選一次，選完全部翻開給你看。</p>
       <div class="cards">${Array.from({length: r.cards}, (_, k) => `<button class="cardback" data-act="draw" data-v="${k}" aria-label="第 ${k + 1} 張">?</button>`).join('')}</div>${msg('draw')}
-      <p class="note">${esc(CFG.prize_base)}</p></section>`;
+      </section>`;
   }
-  const how = r.onsite === 'ended' ? '博覽會已結束' : S.today.is_event_day ? '結帳時把這個畫面給工作人員看' : `12/17–12/19 在 ${esc(CFG.event.booth)} 攤位結帳時出示`;
+  const gift = r.prize_gift;
+  const how = r.onsite === 'ended' ? '博覽會已結束' : gift === 'claimed' ? '已領取' : `12/17–12/19 到 ${esc(CFG.event.booth)} 攤位出示 QR code`;
   const faces = r.hand.map((k, i) => `<div class="cardface ${i === r.pick ? 'mine' : ''} ${justDrew ? 'flip' : ''}" style="animation-delay:${i === r.pick ? 0 : 0.35 + i * 0.05}s">${esc(CFG.prizes[k].short).replace(/\n/g, '<br>')}${i === r.pick ? '<i>你選的</i>' : ''}</div>`).join('');
   return `<section class="extra" id="draw">${head}
       <div class="coupon ${r.onsite === 'ended' ? 'used' : ''}">${esc(p.title)}<small>${how}</small></div>
       <p class="muted">${esc(p.detail)}</p>
       <div class="cards" role="img" aria-label="這副牌的 ${r.cards} 張全部翻開，你選的是第 ${r.pick + 1} 張">${faces}</div>
-      <p class="note">這是你那副牌的全部內容。${esc(CFG.prize_base)}${r.onsite_uses ? ` 已使用 ${r.onsite_uses} 次，謝謝你的支持。` : ''}</p></section>`;
+      <p class="note">這是你那副牌的全部內容。${esc(CFG.prize_base)}${r.special_left === 0 ? ' 特價的件數已經用完，其他商品還是 93 折。' : ''}${r.onsite_uses ? ` 已結帳 ${r.onsite_uses} 次，謝謝你的支持。` : ''}</p></section>`;
 }
 
 function render() {
@@ -242,7 +256,7 @@ function render() {
   if (!S.distance) {
     app.innerHTML = `${friend}<section class="panel alert">
         <h3>你這次跑什麼距離？</h3>
-        <p class="muted">選好之後，我們照你的距離準備一張補給時間表，連同試喝和軟糖，在 ${esc(CFG.event.booth)} 攤位幫你留一份。</p>
+        <p class="muted">選好之後，我們照你的距離準備一張補給時間表，連同軟糖，在 ${esc(CFG.event.booth)} 攤位幫你留一份。</p>
         ${distButtons}
       </section>`;
     return bind();
@@ -265,13 +279,13 @@ function render() {
       <p class="for">${esc(S.name) ? esc(S.name) + '，' : ''}已經幫你保留</p>
       <ul class="items">
         ${item(`${DIST[S.distance]}補給時間表`, '現場依你的配速調整', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
-        ${item('冰的搖滾話梅 1 杯', '現場試喝', S.arrived ? 'claimed' : r.gummy === 'locked' ? 'locked' : S.today.over ? 'ended' : 'ready')}
         ${item('能量軟糖 2 條', '', r.gummy)}
         ${r.bonus !== 'locked' ? item('加碼：能量軟糖 1 條', '答題加碼', r.bonus) : ''}
         ${!['locked', 'waiting_partner'].includes(r.crampeace) ? item('加碼：勁速補 1 包', '揪新朋友加碼', r.crampeace) : ''}
+        ${r.prize_gift ? item(esc(CFG.prizes[r.prize].title.replace('送你', '')), '翻牌抽到的', r.prize_gift) : ''}
       </ul>
       ${pickup()}
-      <div class="mycode"><span class="muted">兌換代碼</span><b>${esc(S.code)}</b></div>
+      ${qrBlock()}
       <p class="note">每人各限領一次，每日限量，送完為止。</p>
     </section>
     <details class="plan"${got ? '' : ''}>

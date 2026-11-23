@@ -15,8 +15,8 @@
 <script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const token = new URLSearchParams(location.search).get('token') || '';
-const NAME = {gummy: '軟糖 2 條', bonus: '加碼軟糖 1 條', crampeace: '勁速補', onsite: '現場優惠券（已使用）', half: '半馬', full: '全馬', cheer: '陪跑／加油'};
-const STN = {1: '選距離', 2: '迷思題', 3: '揪跑友', 4: '攤位試喝', 5: '問黎醫師'};
+const NAME = {gummy: '軟糖 2 條', bonus: '加碼軟糖 1 條', crampeace: '勁速補（揪朋友）', prize: '抽獎贈品', half: '半馬', full: '全馬', cheer: '陪跑／加油'};
+const money = n => Number(n || 0).toLocaleString('en-US');
 const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ? 'num' : ''}">${h}</th>`).join('')}</tr>${
   rows.map(r => `<tr>${r.map((c, i) => `<td class="${i ? 'num' : ''}">${esc(c)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${head.length}">尚無資料</td></tr>`}</table>`;
 
@@ -28,11 +28,19 @@ const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ?
   const tile = (label, n) => `<div class="fact"><span>${label}</span><b class="big">${n}</b></div>`;
   out.innerHTML = `
     <div class="tiles">${tile('LINE 好友（有券的）', d.friends)}${tile('其中新加入', d.new_friends)}${tile('已選距離（已保留）', d.reserved)}${tile('到過攤位', d.arrived)}</div>
-    <div class="tiles">${tile('答完 3 題', d.quiz_done)}${tile('現場優惠結帳次數', d.onsite_uses)}${tile('用過優惠的人數', d.onsite_buyers)}</div>
+    <div class="tiles">${tile('現場營收', money(d.sales_total))}${tile('結帳筆數', d.sales_n)}${tile('客單價', d.sales_n ? money(Math.round(d.sales_total / d.sales_n)) : '–')}${tile('有券的購買人數', d.buyers)}</div>
+    <div class="tiles">${tile('答完 3 題', d.quiz_done)}${tile('沒有券的結帳筆數', d.walkin_n)}${tile('折扣讓利合計', money(d.sales_list_total - d.sales_total))}</div>
     <div class="tiles">${tile('被朋友揪來', d.invited)}${tile('其中是新好友', d.invited_new)}${tile('提問數', d.questions)}${tile('還沒回覆的提問', d.questions_open)}</div>
     <section class="panel"><h3>每日到攤位人數</h3>${table(['日期', '人數'], d.arrived_by_day.map(x => [x.day, x.n]))}</section>
-    <section class="panel"><h3>抽到的現場優惠</h3>${table(['獎項', '人數'], d.draws.map(x => [x.prize, x.n]))}</section>
-    <section class="panel"><h3>每日現場優惠</h3>${table(['日期', '結帳次數', '人數'], d.onsite_by_day.map(x => [x.day, x.n, x.buyers]))}</section>
+    <section class="panel"><h3>每日收款（收攤對帳用）</h3>${table(['日期', '筆數', '合計', '現金', 'LINE Pay'], d.sales_by_day.map(x => [x.day, x.n, money(x.total), money(x.cash), money(x.linepay)]))}</section>
+    <section class="panel"><h3>各種獎的成效</h3>
+      <p class="note">「有買的人數」是抽到這個獎、到現場至少結帳一次的人。</p>
+      ${table(['獎項', '抽出', '贈品已領', '有買的人數', '帶來營收'], d.by_prize.map(x => [d.prize_names[x.prize] || x.prize, x.drawn, x.gifts || '', x.buyers, money(x.revenue)]))}</section>
+    <section class="panel"><h3>贈品獎的名額</h3>
+      <p class="note">抽出的張數到上限後，新發的牌不再有這個獎。</p>
+      ${table(['獎項', '已抽出', '上限'], d.gift_quota.map(x => [d.prize_names[x.prize], x.drawn, x.cap]))}</section>
+    <section class="panel"><h3>各商品銷量</h3>${table(['商品', '數量', '實收'], d.by_product.map(x => [x.name, x.qty, money(x.amount)]))}</section>
+    <section class="panel"><h3>各工作人員的收款</h3>${table(['名字', '筆數', '金額'], d.sales_by_staff.map(x => [x.staff, x.n, money(x.total)]))}</section>
     <section class="panel"><h3>每日新領券人數</h3>${table(['日期', '人數'], d.new_by_day.map(x => [x.day, x.n]))}</section>
     <section class="panel"><h3>發放與使用</h3>${table(['日期', '項目', '次數'], d.claims.map(x => [x.day, NAME[x.reward] || x.reward, x.n]))}</section>
     <section class="panel"><h3>距離</h3>${table(['距離', '人數'], d.by_distance.map(x => [NAME[x.distance] || x.distance, x.n]))}</section>
@@ -41,11 +49,50 @@ const table = (head, rows) => `<table><tr>${head.map((h, i) => `<th class="${i ?
     <section class="panel"><h3>黎醫師提問</h3>
       <p class="note">在 LINE 官方帳號的聊天室回覆後，回來這裡勾選。還沒回的排在前面。</p>
       <div id="qs"><p class="muted">載入中…</p></div></section>
-    <a class="btn primary" href="/api/admin/participants.csv?token=${encodeURIComponent(token)}">下載參加者名單（CSV）</a>
+    <section class="panel"><h3>現場販售的商品</h3>
+      <p class="note">改價格或下架後按「儲存」，核銷頁重新整理就會生效。已經結帳的紀錄不會變。「現場價」有填的商品，有券的人一律用這個價格、不再打折。</p>
+      <div id="prods"><p class="muted">載入中…</p></div></section>
+    <a class="btn primary" href="/api/admin/sales.csv?token=${encodeURIComponent(token)}">下載銷售明細（CSV）</a>
+    <a class="btn" href="/api/admin/participants.csv?token=${encodeURIComponent(token)}">下載參加者名單（CSV）</a>
     <a class="btn" href="/api/admin/questions.csv?token=${encodeURIComponent(token)}">下載所有提問（CSV）</a>
     <p class="note">「新加入」是活動期間才加好友的人。好友總數的正式數字仍以 LINE 官方帳號後台為準。</p>`;
   loadQuestions();
+  loadProducts();
 })();
+
+const TAGS = {'': '一般', gummy: '軟糖（抽獎 200 元）', flask: '水壺（抽獎 100 元）', cramp: '勁速補（抽獎 500 元）', noxx: '氮能膠（抽獎 500 元）'};
+function drawProducts(items) {
+  const box = document.getElementById('prods');
+  const num = v => v ? Number(v) : null;
+  const rowHtml = p => `<div class="reward ${p.active === 0 ? '' : 'on'}" data-row="${esc(p.id || '')}" style="gap:10px">
+      <input data-f="name" value="${esc(p.name || '')}" placeholder="品名" aria-label="品名">
+      <div class="row">
+        <label>官網價<input data-f="price" inputmode="numeric" value="${p.price || ''}"></label>
+        <label>現場價<input data-f="onsite" inputmode="numeric" value="${p.onsite || ''}" placeholder="不填"></label>
+        <label>分類<input data-f="cat" value="${esc(p.cat || '')}"></label>
+      </div>
+      <label>抽獎特價對應<select data-f="tag">${Object.entries(TAGS).map(([k, v]) => `<option value="${k}" ${k === (p.tag || '') ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+      ${p.id ? `<label style="flex-direction:row;align-items:center;gap:10px"><input type="checkbox" data-f="active" ${p.active ? 'checked' : ''} style="width:24px;height:24px"> 上架中</label>` : ''}
+      <button data-save>${p.id ? '儲存' : '新增這項商品'}</button><p class="msg" hidden></p></div>`;
+  box.innerHTML = items.map(rowHtml).join('') + '<h3 style="margin-top:8px">新增商品</h3>' + rowHtml({});
+  box.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
+    const row = b.closest('[data-row]'), f = k => row.querySelector(`[data-f="${k}"]`);
+    const old = items.find(x => x.id === row.dataset.row) || {};
+    b.disabled = true;
+    const r = await (await fetch('/api/admin/product?token=' + encodeURIComponent(token), {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: row.dataset.row, name: f('name').value, cat: f('cat').value, tag: f('tag').value,
+        price: num(f('price').value), onsite: num(f('onsite').value), multi: old.multi || null,
+        active: f('active') ? f('active').checked : true})})).json().catch(() => ({}));
+    if (r.ok) return drawProducts(r.items);
+    b.disabled = false;
+    const m = row.querySelector('.msg'); m.hidden = false; m.className = 'msg bad'; m.textContent = r.error || '儲存失敗';
+  });
+}
+async function loadProducts() {
+  const r = await (await fetch('/api/admin/products?token=' + encodeURIComponent(token))).json().catch(() => ({}));
+  if (r.ok) drawProducts(r.items);
+  else document.getElementById('prods').innerHTML = '<p class="msg bad">商品讀取失敗</p>';
+}
 
 async function loadQuestions() {
   const t = encodeURIComponent(token);
