@@ -57,6 +57,8 @@ def create_app(test_config=None):
         LINE_CHANNEL_SECRET=env("LINE_CHANNEL_SECRET", ""),
         LINE_KEYWORD=env("LINE_KEYWORD", "任務卡"),
         LINE_KEYWORD_PLAN=env("LINE_KEYWORD_PLAN", "補給表"),
+        # 有人新加好友時，是否自動回一則兌換券連結。活動開始前設 0，只有輸入關鍵字的人才會收到。
+        REPLY_ON_FOLLOW=env("REPLY_ON_FOLLOW", "1") == "1",
         # 選好距離時主動把補給時間表傳到他的 LINE（每人一則，計入每月訊息則數）
         PUSH_PLAN=env("PUSH_PLAN", "1") == "1",
         PUBLIC_URL=env("PUBLIC_URL", "").rstrip("/"),
@@ -401,6 +403,8 @@ def create_app(test_config=None):
             u = rules.get_user(db(), uid)
             if not u["is_new"] and (now() - rules.parse(u["created_at"])).total_seconds() <= 600:
                 db().execute("UPDATE users SET is_new=1 WHERE id=?", (uid,))
+        if kind == "follow" and not c["REPLY_ON_FOLLOW"]:
+            return
         if token and ev.get("replyToken"):
             try:
                 u = rules.get_user(db(), uid)

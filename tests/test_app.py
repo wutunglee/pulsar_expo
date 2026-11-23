@@ -698,6 +698,15 @@ class TestOAIdentity(Base):
         self.c(who).post("/api/consent")
         return self.me(who)
 
+    def test_follow_reply_can_be_switched_off_before_launch(self):
+        self.app.config["REPLY_ON_FOLLOW"] = False
+        self.hook(self.ev("follow", "U7"))
+        self.assertEqual(self.sent, [])                                   # 新好友不會收到兌換券訊息
+        u = self.conn().execute("SELECT is_friend, is_new FROM users WHERE id='U7'").fetchone()
+        self.assertEqual((u["is_friend"], u["is_new"]), (1, 1))           # 但還是記下他是新好友
+        self.hook(self.ev("message", "U7", "任務卡"))
+        self.assertEqual(len(self.sent), 1)                               # 自己輸入關鍵字的照樣回
+
     def test_bad_signature_rejected(self):
         self.assertEqual(self.hook(self.ev("follow", "U1"), secret="wrong").status_code, 401)
         self.assertEqual(self.sent, [])
