@@ -434,6 +434,8 @@ def create_app(test_config=None):
         if dist not in rules.DISTANCES:
             return err("請選擇距離")
         uid = session["uid"]
+        if app.config["FRIEND_CHECK"] != "staff" and not rules.get_user(db(), uid)["is_friend"]:
+            return err("請先加入 PulsarPump 的 LINE 好友", 403, reason="not_friend")
         db().execute("UPDATE users SET distance=? WHERE id=?", (dist, uid))
         send_plan_once(uid, dist)
         return jsonify({"ok": True, "state": me_state()})

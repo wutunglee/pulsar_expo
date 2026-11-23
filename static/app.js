@@ -245,12 +245,18 @@ function render() {
       <h3>${CFG.friend_check === 'staff' ? '領取前，請攤位人員確認好友' : '先加入 LINE 好友'}</h3>
       <p class="muted">${CFG.friend_check === 'staff'
         ? '加入好友後，到攤位把 LINE 畫面給工作人員看一下，就能領取。'
-        : '加入好友後才能領取，博覽會前一天也會提醒你。'}</p>
+        : '加入 PulsarPump 的 LINE 好友，就能領兌換券、翻牌抽獎。博覽會前一天也會提醒你。'}</p>
       <a class="btn primary" href="${addFriendUrl()}" target="_blank" rel="noopener">加入 PulsarPump 好友</a>
       <button data-act="refresh">${CFG.friend_check === 'staff' ? '重新整理' : '我加好了，重新整理'}</button>${msg('refresh')}
     </section>`;
   const distButtons = `<div class="row">${Object.entries(DIST).map(([k, v]) =>
       `<button data-act="dist" data-v="${k}" class="${S.distance === k ? 'sel' : ''}">${v}</button>`).join('')}</div>${msg('dist')}`;
+
+  // 還沒加好友：只做這一件事，加了才往下（由攤位人員確認好友的模式除外）
+  if (!S.is_friend && CFG.friend_check !== 'staff' && !S.distance) {
+    app.innerHTML = friend;
+    return bind();
+  }
 
   // 第一步：還沒選距離
   if (!S.distance) {

@@ -118,7 +118,10 @@ class TestVoucher(Base):
 
     def test_not_friend_cannot_reserve_or_checkin(self):
         self.join("a", friend=False)
-        self.assertEqual(self.me("a")["rewards"]["gummy"], "locked")
+        r = self.post("a", "/api/distance", distance="half")                 # 不是好友不能選距離
+        self.assertEqual((r.status_code, r.get_json()["reason"]), (403, "not_friend"))
+        s = self.me("a")
+        self.assertEqual((s["distance"], s["rewards"]["gummy"], s["rewards"]["cards"]), (None, "locked", 0))
         self.clock = at("2026-12-17 13:00")
         r = self.checkin("a")
         self.assertEqual(r.status_code, 409)
